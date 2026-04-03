@@ -1,0 +1,15 @@
+{
+  "name": "dev-harness-local",
+  "version": "1.0.0",
+  "owner": {
+    "name": "brothelmdzz"
+  },
+  "plugins": [
+    {
+      "name": "dev-harness",
+      "source": "./",
+      "description": "Harness Engineering development pipeline. Three-layer skill resolution, auto-loop iteration, visual HUD, 12 specialized agents.",
+      "version": "2.0.0"
+    }
+  ]
+}

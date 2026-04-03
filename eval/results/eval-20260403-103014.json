@@ -1,0 +1,150 @@
+{
+  "timestamp": "2026-04-03T10:30:14.284022",
+  "results": [
+    {
+      "metric": "skill_resolution",
+      "results": [
+        {
+          "test": "ehub_audit_resolution",
+          "pass": true,
+          "detail": "L1:audit-logic"
+        },
+        {
+          "test": "generic_wiki_fallback",
+          "pass": true,
+          "detail": "L3:generic-wiki"
+        },
+        {
+          "test": "resolve_all_stages",
+          "pass": true,
+          "detail": "11 stages resolved"
+        }
+      ],
+      "duration_sec": 0.5,
+      "timestamp": "2026-04-03T10:30:11.779010"
+    },
+    {
+      "metric": "state_management",
+      "results": [
+        {
+          "test": "init_creates_state",
+          "pass": true,
+          "detail": "route=B"
+        },
+        {
+          "test": "route_b_has_research",
+          "pass": true,
+          "detail": "{'name': 'research', 'status': 'PENDING'}"
+        },
+        {
+          "test": "update_stage_status",
+          "pass": true,
+          "detail": "DONE"
+        },
+        {
+          "test": "clite_skips_stages",
+          "pass": true,
+          "detail": "Skipped: ['research', 'prd', 'plan', 'audit', 'docs', 'review']"
+        }
+      ],
+      "duration_sec": 0.5,
+      "timestamp": "2026-04-03T10:30:12.277389"
+    },
+    {
+      "metric": "auto_continue",
+      "results": [
+        {
+          "test": "continue_next_phase",
+          "pass": true,
+          "detail": "output='{\"decision\": \"block\", \"reason\": \"继续实现下一个 Phase: Phase 2。读取 plan 文件确认该 Phase 内容，然'"
+        },
+        {
+          "test": "continue_to_audit_docs_parallel",
+          "pass": true,
+          "detail": "output='{\"decision\": \"block\", \"reason\": \"上一阶段 implement 已完成。并行启动 audit 和 docs 阶段。用 backg'"
+        },
+        {
+          "test": "paused_no_continue",
+          "pass": true,
+          "detail": "output=''"
+        },
+        {
+          "test": "deadloop_no_continue",
+          "pass": true,
+          "detail": "output=''"
+        },
+        {
+          "test": "all_done_no_continue",
+          "pass": true,
+          "detail": "output=''"
+        }
+      ],
+      "duration_sec": 0.72,
+      "timestamp": "2026-04-03T10:30:13.000810"
+    },
+    {
+      "metric": "gate_detection",
+      "results": [
+        {
+          "test": "detect_gradle",
+          "pass": true,
+          "detail": "{'stack': 'gradle', 'build': './gradlew build -x test', 'test': './gradlew test', 'lint': ''}"
+        },
+        {
+          "test": "detect_python",
+          "pass": true,
+          "detail": "{'stack': 'python', 'build': 'pip install -e . -q', 'test': 'pytest', 'lint': 'ruff check .'}"
+        },
+        {
+          "test": "detect_node",
+          "pass": true,
+          "detail": "{'stack': 'node', 'build': 'npm run build', 'test': 'npm test', 'lint': 'npm run lint'}"
+        },
+        {
+          "test": "detect_unknown",
+          "pass": true,
+          "detail": "{'stack': 'unknown', 'build': \"echo 'no build command detected'\", 'test': \"echo 'no test command detected'\", 'lint': ''}"
+        }
+      ],
+      "duration_sec": 0.47,
+      "timestamp": "2026-04-03T10:30:13.467933"
+    },
+    {
+      "metric": "pipeline_routing",
+      "results": [
+        {
+          "test": "route_B_stages",
+          "pass": true,
+          "detail": "expected=['research', 'prd', 'plan', 'implement', 'audit', 'docs', 'test', 'review', 'remember'], actual=['research', 'prd', 'plan', 'implement', 'audit', 'docs', 'test', 'review', 'remember']"
+        },
+        {
+          "test": "route_A_stages",
+          "pass": true,
+          "detail": "expected=['prd', 'plan', 'implement', 'audit', 'docs', 'test', 'review', 'remember'], actual=['prd', 'plan', 'implement', 'audit', 'docs', 'test', 'review', 'remember']"
+        },
+        {
+          "test": "route_C_stages",
+          "pass": true,
+          "detail": "expected=['plan', 'implement', 'audit', 'docs', 'test', 'review', 'remember'], actual=['plan', 'implement', 'audit', 'docs', 'test', 'review', 'remember']"
+        },
+        {
+          "test": "route_C-lite_stages",
+          "pass": true,
+          "detail": "expected=['implement', 'test', 'remember'], actual=['implement', 'test', 'remember']"
+        },
+        {
+          "test": "route_D_stages",
+          "pass": true,
+          "detail": "expected=['implement', 'test', 'remember'], actual=['implement', 'test', 'remember']"
+        }
+      ],
+      "duration_sec": 0.82,
+      "timestamp": "2026-04-03T10:30:14.284022"
+    }
+  ],
+  "summary": {
+    "total_pass": 21,
+    "total_tests": 21,
+    "weighted_score": 1.0
+  }
+}

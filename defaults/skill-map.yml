@@ -1,0 +1,55 @@
+# Skill 别名映射
+# stage name → 按优先级尝试的 Skill 名称列表
+
+skill_aliases:
+  research:
+    - research_codebase
+    - research
+    - generic-research
+
+  prd:
+    - create_prd
+    - prd
+    - generic-prd
+
+  plan:
+    - create_plan
+    - plan
+    - generic-plan
+
+  implement:
+    - implement_plan
+    - implement
+    - generic-implement
+
+  validate:
+    - validate_plan
+    - validate
+    - generic-validate
+
+  audit:
+    - audit-logic
+    - audit
+    - generic-audit
+
+  test:
+    - test-apis
+    - test
+    - generic-test
+
+  docs:
+    - update-api-docs
+    - docs
+    - generic-docs
+
+  review:
+    - generic-review
+    - review
+
+  wiki:
+    - generic-wiki
+    - wiki
+
+  remember:
+    - remember
+    - generic-remember

@@ -1,0 +1,22 @@
+{
+  "name": "dev-harness",
+  "version": "2.0.0",
+  "description": "Harness Engineering development pipeline for Claude Code. Three-layer skill resolution, auto-loop iteration inspired by Karpathy's autoresearch, visual HUD, and 12 specialized agents.",
+  "homepage": "https://github.com/brothelmdzz/dev-harness",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/brothelmdzz/dev-harness.git"
+  },
+  "license": "MIT",
+  "author": "brothelmdzz",
+  "keywords": [
+    "claude-code",
+    "plugin",
+    "harness-engineering",
+    "development-pipeline",
+    "auto-loop",
+    "autoresearch",
+    "agent-orchestration",
+    "agentic-ai"
+  ]
+}

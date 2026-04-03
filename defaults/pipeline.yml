@@ -1,0 +1,43 @@
+# Dev Harness 默认 Pipeline 定义
+# 项目可在 .claude/dev-config.yml 中覆盖任意字段
+
+stages:
+  - name: research
+    when: "route in [B]"
+    human: false
+
+  - name: prd
+    when: "route in [A, B]"
+    human: true
+
+  - name: plan
+    when: "route in [A, B, C]"
+    human: true
+
+  - name: implement
+    when: "route in [A, B, C, C-lite, D]"
+    loop: true
+    gate:
+      - build
+      - test
+    max_retries: 3
+
+  - name: audit
+    when: "route in [A, B, C]"
+    parallel_with: docs
+    auto_fix: true
+
+  - name: docs
+    when: "changed_api"
+    parallel_with: audit
+
+  - name: test
+    when: "route in [A, B, C]"
+    auto_fix: true
+    max_retries: 3
+
+  - name: review
+    when: "route in [A, B, C]"
+
+  - name: remember
+    when: "always"
