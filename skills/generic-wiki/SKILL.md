@@ -44,8 +44,8 @@ description: Wiki 知识库自动同步 — 在代码变更交付后将功能说
 ```yaml
 wiki:
   type: confluence          # confluence 或 lark
-  base_url: "http://192.168.0.40/confluence"
-  space_key: EHUB
+  base_url: "http://your-wiki.example.com/confluence"
+  space_key: YOUR_SPACE
 ```
 
 ### 优先级 2: Atlassian MCP（如已认证）
@@ -60,7 +60,7 @@ ToolSearch("confluence atlassian page")
 
 ### 优先级 3: ai-capability-hub REST API
 
-项目 `C:/work/ai-capability-hub/src/tools/confluence/index.ts` 提供 REST API:
+项目 `your-project/tools/confluence/index.ts` 提供 REST API:
 - 认证: Basic Auth（环境变量 CONFLUENCE_USERNAME / CONFLUENCE_PASSWORD）
 - 操作: search / get / create / update
 
@@ -84,12 +84,12 @@ ToolSearch("confluence atlassian page")
 
 ```
 1. 搜索: 在目标 space 中搜索是否已有对应页面
-   action=search, space=EHUB, query="功能名称"
+   action=search, space=YOUR_SPACE, query="功能名称"
 
 2. 判断: 页面存在?
    YES → action=get, page_id=xxx  获取当前内容和版本号
          → action=update, page_id=xxx  追加/更新变更内容
-   NO  → action=create, space=EHUB, title=xxx, parent_id=xxx
+   NO  → action=create, space=YOUR_SPACE, title=xxx, parent_id=xxx
 
 3. 内容格式: Confluence Storage Format (XHTML)
    将 Markdown 变更说明转换为 XHTML

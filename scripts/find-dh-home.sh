@@ -4,7 +4,7 @@ for dir in \
   "$HOME/.claude/plugins/cache/dev-harness-marketplace/dev-harness"/*/ \
   "$HOME/.claude/plugins/cache/dev-harness-local/dev-harness"/*/ \
   "$HOME/.claude/plugins/dev-harness/" \
-  "/c/work/dev-harness/"; do
+  ; do
     if [ -f "${dir}scripts/harness.py" ]; then
         echo "${dir%/}"
         exit 0

@@ -24,7 +24,7 @@ DH_HOME=$(find ~/.claude/plugins/cache -path "*dev-harness*/scripts/harness.py" 
 echo "Dev Harness: $DH_HOME"
 ```
 
-后续所有脚本调用使用 `$DH_HOME/scripts/xxx` 格式。如果找不到，回退到 `/c/work/dev-harness/`。
+后续所有脚本调用使用 `$DH_HOME/scripts/xxx` 格式。如果找不到，回退到源码开发目录。
 
 ---
 

@@ -64,20 +64,20 @@ def test_skill_resolution():
 
     # 测试 1: 在 EHub 项目中，audit 应该命中 L1 或 L2
     out, rc = run_cmd(f"python {RESOLVER_SCRIPT} audit --verbose",
-                       cwd="C:/work/ehub-integrated-platform")
+                       cwd=os.getcwd())
     if rc == 0:
         info = json.loads(out)
         # audit-logic 在 ~/.claude/skills/ 中，应命中 L2 或 L1
         if info["level"] in ("L1", "L2") and "audit" in info["name"]:
-            results.append({"test": "ehub_audit_resolution", "pass": True, "detail": f"{info['level']}:{info['name']}"})
+            results.append({"test": "project_audit_resolution", "pass": True, "detail": f"{info['level']}:{info['name']}"})
         else:
-            results.append({"test": "ehub_audit_resolution", "pass": False, "detail": f"Expected L1/L2 audit, got {info['level']}:{info['name']}"})
+            results.append({"test": "project_audit_resolution", "pass": False, "detail": f"Expected L1/L2 audit, got {info['level']}:{info['name']}"})
     else:
-        results.append({"test": "ehub_audit_resolution", "pass": False, "detail": f"Command failed: rc={rc}"})
+        results.append({"test": "project_audit_resolution", "pass": False, "detail": f"Command failed: rc={rc}"})
 
     # 测试 2: 对未知 stage 应该返回 L3 generic
     out, rc = run_cmd(f"python {RESOLVER_SCRIPT} wiki --verbose",
-                       cwd="C:/work/ehub-integrated-platform")
+                       cwd=os.getcwd())
     if rc == 0:
         info = json.loads(out)
         results.append({"test": "generic_wiki_fallback", "pass": info["level"] == "L3",
@@ -87,7 +87,7 @@ def test_skill_resolution():
 
     # 测试 3: --all 应该返回所有 stage 的解析结果
     out, rc = run_cmd(f"python {RESOLVER_SCRIPT} --all",
-                       cwd="C:/work/ehub-integrated-platform")
+                       cwd=os.getcwd())
     if rc == 0:
         lines = [l for l in out.split("\n") if l.strip()]
         results.append({"test": "resolve_all_stages", "pass": len(lines) >= 8,
