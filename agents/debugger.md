@@ -1,7 +1,7 @@
 ---
 name: debugger
 description: Bug 诊断。分析编译错误、测试失败、运行异常的根因。用于 implement 门禁失败时。
-model: sonnet
+model: opus
 tools:
   - Read
   - Bash

@@ -1,7 +1,7 @@
 ---
 name: qa-tester
 description: 测试工程师。生成测试用例、设计测试策略、验证功能正确性。用于 test 阶段。
-model: sonnet
+model: opus
 tools:
   - Read
   - Bash

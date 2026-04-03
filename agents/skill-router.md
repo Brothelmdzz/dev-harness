@@ -1,7 +1,7 @@
 ---
 name: skill-router
 description: Skill 路由。执行三层 Skill 解析，确定当前阶段应该调用哪个 Skill。
-model: haiku
+model: opus
 tools:
   - Read
   - Bash

@@ -1,7 +1,7 @@
 ---
 name: wiki-syncer
 description: Wiki 同步。将代码变更同步到 Confluence/飞书知识库。用于 wiki 阶段。
-model: sonnet
+model: opus
 tools:
   - Read
   - Bash

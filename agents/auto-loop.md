@@ -1,7 +1,7 @@
 ---
 name: auto-loop
 description: AutoLoop 迭代器。自主循环推进整个 Pipeline，自动修复问题，直到完成或达到停止条件。受 Karpathy autoresearch 启发。
-model: sonnet
+model: opus
 tools:
   - Read
   - Write

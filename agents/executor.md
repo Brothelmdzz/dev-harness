@@ -1,7 +1,7 @@
 ---
 name: executor
 description: 代码实现。编写标准业务代码、CRUD、DTO、配置等不需要深度推理的代码。用于 implement 阶段的简单 Phase。
-model: sonnet
+model: opus
 tools:
   - Read
   - Write

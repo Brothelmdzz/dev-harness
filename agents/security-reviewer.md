@@ -1,7 +1,7 @@
 ---
 name: security-reviewer
 description: 安全审查。检测 SQL 注入、XSS、敏感信息泄露、权限缺失、不安全的依赖。用于 review 阶段。
-model: sonnet
+model: opus
 tools:
   - Read
   - Grep
