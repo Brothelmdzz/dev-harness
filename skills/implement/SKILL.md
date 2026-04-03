@@ -23,7 +23,7 @@ model: opus
 
 ```bash
 # 检测技术栈
-bash ~/.claude/plugins/dev-harness/scripts/detect-stack.sh
+bash $DH_HOME/scripts/detect-stack.sh
 
 # 如果项目有 .claude/dev-config.yml，优先用项目定义的门禁命令
 # 否则用检测到的默认命令
@@ -35,11 +35,11 @@ bash ~/.claude/plugins/dev-harness/scripts/detect-stack.sh
 
 ```bash
 # 门禁通过
-python ~/.claude/plugins/dev-harness/scripts/harness.py update implement IN_PROGRESS \
+python $DH_HOME/scripts/harness.py update implement IN_PROGRESS \
   --phase {N} --gate build=pass --gate test=pass
 
 # 门禁失败
-python ~/.claude/plugins/dev-harness/scripts/harness.py update implement IN_PROGRESS \
+python $DH_HOME/scripts/harness.py update implement IN_PROGRESS \
   --phase {N} --error --auto-fixed
 ```
 
