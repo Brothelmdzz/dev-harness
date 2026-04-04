@@ -178,6 +178,29 @@ def migrate_legacy_state(old):
 
 # ==================== 主逻辑 ====================
 
+def output_continue():
+    """允许停止（不阻拦），学习 OMC 的 {continue: true} 模式"""
+    print(json.dumps({"continue": True, "suppressOutput": True}))
+
+def is_context_limit_stop(hook_input):
+    """
+    检测是否因上下文满而停止。
+    阻止 context-limit 停止会导致死锁：无法 compact 因为无法停止，无法继续因为上下文满。
+    学习自 OMC issue #213。
+    """
+    for key in ["stop_reason", "stopReason", "end_turn_reason", "endTurnReason", "reason"]:
+        reason = str(hook_input.get(key, "")).lower()
+        if any(p in reason for p in ["context", "token limit", "max_tokens", "context_length", "too long"]):
+            return True
+    return False
+
+def is_user_abort(hook_input):
+    """检测用户主动中断（Ctrl+C / cancel）"""
+    if hook_input.get("user_requested") or hook_input.get("userRequested"):
+        return True
+    reason = str(hook_input.get("stop_reason", hook_input.get("stopReason", ""))).lower()
+    return reason in ("aborted", "abort", "cancel", "interrupt")
+
 def main():
     # ==================== 读取 hook 输入 ====================
     try:
@@ -187,8 +210,27 @@ def main():
 
     stop_hook_active = hook_input.get("stop_hook_active", False)
 
+    # ==================== 关键: 从 hook 输入获取项目目录 ====================
+    # Claude Code 传入 cwd 字段，比 find_project_root() 更可靠
+    hook_cwd = hook_input.get("cwd") or hook_input.get("directory") or ""
+
+    # ==================== 必须放行的停止类型 ====================
+    # 上下文满 → 必须放行，否则死锁（无法 compact）
+    if is_context_limit_stop(hook_input):
+        output_continue()
+        sys.exit(0)
+
+    # 用户主动中断 → 尊重用户意愿
+    if is_user_abort(hook_input):
+        output_continue()
+        sys.exit(0)
+
     # ==================== 读取 harness 状态 ====================
-    project_root = find_project_root()
+    if hook_cwd:
+        project_root = Path(hook_cwd)
+    else:
+        project_root = find_project_root()
+
     state_file = project_root / ".claude" / "harness-state.json"
     eval_log = project_root / ".claude" / "harness-eval.jsonl"
 
@@ -240,20 +282,20 @@ def main():
         sys.exit(0)
 
     # ==================== 防线 2: 上下文使用率 ====================
+    # 学习 OMC: 上下文满时必须放行（让 Claude Code 自动 compact），不能 block
+    # 只标记 remember 为 PENDING，compact 后新会话续接时自然会跑 remember
     ctx = hook_input.get("context_window", {})
     ctx_used = ctx.get("used", 0)
     ctx_total = ctx.get("total", 1)
     ctx_pct = (ctx_used / ctx_total * 100) if ctx_total > 0 else 0
     if ctx_pct > CONTEXT_OVERFLOW_PCT:
-        state["current_stage"] = "remember"
         for s in pipeline:
             if s["name"] == "remember":
                 s["status"] = "PENDING"
         save_state(state, state_file)
-        reason = f"上下文使用率 {ctx_pct:.0f}% > {CONTEXT_OVERFLOW_PCT}%，转入 remember 阶段保存进度。"
-        output_block(reason, state, project_root)
-        log_eval(project_root, state, "context_overflow", f"ctx={ctx_pct:.0f}%")
-        return
+        log_eval(project_root, state, "context_overflow", f"ctx={ctx_pct:.0f}%，放行让 compact")
+        output_continue()
+        sys.exit(0)
 
     # ==================== 防线 3: 单阶段超时 ====================
     stage_timeout = state.get("metrics", {}).get("stage_timeout", STAGE_TIMEOUT_SEC)
