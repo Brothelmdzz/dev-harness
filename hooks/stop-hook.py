@@ -33,11 +33,51 @@ RATE_LIMIT_PAUSE_MIN = 15      # rate limit 暂停时长
 # ==================== 工具函数 ====================
 
 def find_project_root():
+    """
+    查找项目根目录。优先从 cwd 向上找 .git，
+    如果找不到（Hook cwd 可能不在项目目录下），
+    则扫描常见工作目录下最近修改的 harness-state.json。
+    """
+    # 方式 1: 从 cwd 向上查找
     p = Path.cwd()
     while p != p.parent:
-        if (p / ".git").exists():
+        if (p / ".git").exists() and (p / ".claude" / "harness-state.json").exists():
             return p
         p = p.parent
+
+    # 方式 2: cwd 下直接有 .claude/harness-state.json（非 git 项目）
+    cwd = Path.cwd()
+    if (cwd / ".claude" / "harness-state.json").exists():
+        return cwd
+
+    # 方式 3: 扫描常见工作目录，找最近修改的 harness-state.json
+    scan_dirs = []
+    work_candidates = [
+        Path("C:/work"),           # Windows 常见
+        Path.home() / "work",      # ~/work
+        Path.home() / "projects",  # ~/projects
+        Path.home() / "src",       # ~/src
+    ]
+    for wc in work_candidates:
+        try:
+            if wc.exists() and wc.is_dir():
+                scan_dirs.extend(d for d in wc.iterdir() if d.is_dir())
+        except (PermissionError, OSError):
+            pass
+
+    best = None
+    best_mtime = 0
+    for d in scan_dirs:
+        state = d / ".claude" / "harness-state.json"
+        if state.exists():
+            mtime = state.stat().st_mtime
+            if mtime > best_mtime:
+                best_mtime = mtime
+                best = d
+
+    if best:
+        return best
+
     return Path.cwd()
 
 def now_iso():
@@ -93,6 +133,49 @@ def count_recent_events(eval_log_path, minutes=5):
         pass
     return count
 
+# ==================== 旧格式迁移 ====================
+
+def migrate_legacy_state(old):
+    """
+    将旧格式 {"stages": {"implement": {...}, ...}} 转换为
+    新格式 {"pipeline": [{"name": "implement", ...}], "metrics": {...}}
+
+    旧格式来源: Claude 手写 harness-state.json（未通过 harness.py init）
+    """
+    stages_dict = old.get("stages", {})
+    pipeline = []
+    stage_order = ["research", "prd", "plan", "implement", "audit", "docs", "test", "review", "remember"]
+
+    for name in stage_order:
+        if name in stages_dict:
+            s = dict(stages_dict[name])
+            s["name"] = name
+            # 旧格式 phases 可能在 stages.implement.phases 里
+            pipeline.append(s)
+
+    # 保留旧字段中有用的信息
+    task_name = old.get("task", "")
+    if isinstance(task_name, str):
+        task_obj = {"name": task_name, "route": old.get("route", "C"),
+                    "branch": "", "module": "", "started_at": old.get("created", "")}
+    else:
+        task_obj = task_name  # 已经是对象
+
+    return {
+        "version": "1.0",
+        "project": old.get("project", ""),
+        "task": task_obj,
+        "pipeline": pipeline,
+        "current_stage": old.get("current_stage", ""),
+        "paused": old.get("paused", False),
+        "metrics": {
+            "total_errors": 0, "auto_fixed": 0, "blocking": 0,
+            "max_retries": 3, "stages_completed": 0, "auto_continues": 0,
+            "max_duration": 7200,
+        },
+        "_migrated_from": "legacy",
+    }
+
 # ==================== 主逻辑 ====================
 
 def main():
@@ -113,6 +196,13 @@ def main():
         state = json.loads(state_file.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError):
         sys.exit(0)
+
+    # ==================== 旧格式兼容 ====================
+    # v2 之前的 /dev skill 可能手写 state，格式为 {"stages": {...}} 而非 {"pipeline": [...]}
+    # 这里自动转换，确保 Stop Hook 能正常工作
+    if "stages" in state and "pipeline" not in state:
+        state = migrate_legacy_state(state)
+        state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if state.get("paused"):
         if state.get("pause_reason") == "rate_limit":
