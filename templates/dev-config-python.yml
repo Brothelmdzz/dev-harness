@@ -1,0 +1,22 @@
+# Python 项目配置模板
+# 复制到项目根目录 .claude/dev-config.yml 后按需修改
+
+project: my-python-app
+tech_stack: python
+
+gates:
+  build: "pip install -e . -q"
+  test: "pytest -v"
+  lint: "ruff check ."
+
+tdd: true
+default_profile: backend
+
+permissions:
+  auto_fix: true
+  auto_continue: true
+  max_auto_phases: 10
+  max_duration: 7200
+  require_approval:
+    - prd
+    - plan

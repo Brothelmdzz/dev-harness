@@ -1,0 +1,32 @@
+# Spring Boot 项目配置模板
+# 复制到项目根目录 .claude/dev-config.yml 后按需修改
+
+project: my-spring-boot-app
+tech_stack: spring-boot
+
+gates:
+  build: "./gradlew build -x test"
+  test: "./gradlew test"
+  lint: ""
+
+# Skill 覆盖（取消注释并填写你的 L1 Skill 名）
+# skill_overrides:
+#   audit: my-custom-audit
+#   test: my-e2e-test
+
+tdd: false
+default_profile: backend
+
+permissions:
+  auto_fix: true
+  auto_continue: true
+  max_auto_phases: 10
+  max_duration: 7200
+  require_approval:
+    - prd
+    - plan
+
+# wiki:
+#   type: confluence
+#   base_url: "http://wiki.example.com/confluence"
+#   space_key: MYPROJ

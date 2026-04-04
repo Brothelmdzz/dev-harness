@@ -1,4 +1,4 @@
-# Dev Harness 默认 Pipeline 定义
+# Dev Harness 默认 Pipeline 定义 (v3.0)
 # 项目可在 .claude/dev-config.yml 中覆盖任意字段
 
 stages:
@@ -21,6 +21,7 @@ stages:
       - build
       - test
     max_retries: 3
+    worktree: true
 
   - name: audit
     when: "route in [A, B, C]"
@@ -41,3 +42,16 @@ stages:
 
   - name: remember
     when: "always"
+
+# v3.0 新增: 角色 profile 定义
+profiles:
+  backend:
+    skill_prefix: ""
+  frontend:
+    skill_prefix: "frontend_"
+  product:
+    skill_prefix: "product_"
+  qa:
+    skill_prefix: "qa_"
+  fullstack:
+    skill_prefix: ""

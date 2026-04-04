@@ -1,0 +1,22 @@
+# Next.js 项目配置模板
+# 复制到项目根目录 .claude/dev-config.yml 后按需修改
+
+project: my-nextjs-app
+tech_stack: nextjs
+
+gates:
+  build: "npm run build"
+  test: "npm test"
+  lint: "npm run lint"
+
+tdd: false
+default_profile: frontend
+
+permissions:
+  auto_fix: true
+  auto_continue: true
+  max_auto_phases: 10
+  max_duration: 7200
+  require_approval:
+    - prd
+    - plan

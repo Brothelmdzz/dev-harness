@@ -1,4 +1,4 @@
-# Skill 别名映射
+# Skill 别名映射 (v3.0)
 # stage name → 按优先级尝试的 Skill 名称列表
 
 skill_aliases:
@@ -53,3 +53,37 @@ skill_aliases:
   remember:
     - remember
     - generic-remember
+
+# v3.0 新增: 角色 Profile 专用别名
+# 解析时先尝试 profile 专用，再 fallback 到上面的通用列表
+profile_aliases:
+  frontend:
+    research:
+      - frontend-research
+      - frontend_research
+    implement:
+      - frontend-implement
+      - frontend_implement
+    test:
+      - frontend-test
+      - frontend_test
+    audit:
+      - frontend-audit
+      - frontend_audit
+
+  product:
+    prd:
+      - product-prd
+      - product_prd
+    review:
+      - product-review
+      - product_review
+
+  qa:
+    test:
+      - qa-e2e
+      - qa-test
+      - qa_test
+    audit:
+      - qa-regression
+      - qa_regression

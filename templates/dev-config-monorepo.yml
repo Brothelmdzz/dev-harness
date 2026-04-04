@@ -1,0 +1,22 @@
+# Monorepo 配置模板
+# 复制到项目根目录 .claude/dev-config.yml 后按需修改
+
+project: my-monorepo
+tech_stack: monorepo
+
+gates:
+  build: "npm run build --workspace=packages/*"
+  test: "npm test --workspace=packages/*"
+  lint: "npm run lint --workspace=packages/*"
+
+tdd: false
+default_profile: fullstack
+
+permissions:
+  auto_fix: true
+  auto_continue: true
+  max_auto_phases: 15
+  max_duration: 10800
+  require_approval:
+    - prd
+    - plan

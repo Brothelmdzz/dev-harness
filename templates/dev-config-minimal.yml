@@ -1,0 +1,8 @@
+# 最小化配置模板
+# 只需要填写项目名和门禁命令
+
+project: my-project
+
+gates:
+  build: "echo 'TODO: 填写构建命令'"
+  test: "echo 'TODO: 填写测试命令'"
