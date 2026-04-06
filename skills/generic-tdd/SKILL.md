@@ -61,10 +61,10 @@ COMMIT → 提交这个最小可工作单元
 
 ```bash
 # 全量构建 + 测试
-bash "$DH_HOME/scripts/detect-stack.sh"
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-stack.sh"
 
 # 更新 harness 状态
-python "$DH_HOME/scripts/harness.py" update implement IN_PROGRESS \
+python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update implement IN_PROGRESS \
   --phase {N} --gate build=pass --gate test=pass
 ```
 

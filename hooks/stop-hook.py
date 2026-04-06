@@ -53,11 +53,20 @@ def find_project_root():
     # 方式 3: 扫描常见工作目录，找最近修改的 harness-state.json
     scan_dirs = []
     work_candidates = [
-        Path("C:/work"),           # Windows 常见
-        Path.home() / "work",      # ~/work
-        Path.home() / "projects",  # ~/projects
-        Path.home() / "src",       # ~/src
+        Path.home() / "work",
+        Path.home() / "projects",
+        Path.home() / "src",
+        Path.home() / "dev",
+        Path.home() / "repos",
     ]
+    # Windows 额外扫描盘根下常见目录
+    if os.name == "nt":
+        for drive in ["C", "D", "E"]:
+            for name in ["work", "projects", "dev", "src"]:
+                work_candidates.append(Path(f"{drive}:/{name}"))
+    # Unix 额外扫描 /opt 等
+    else:
+        work_candidates.append(Path("/opt"))
     for wc in work_candidates:
         try:
             if wc.exists() and wc.is_dir():
@@ -245,6 +254,15 @@ def main():
     if "stages" in state and "pipeline" not in state:
         state = migrate_legacy_state(state)
         state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # ==================== Session ID 隔离 ====================
+    # 如果 hook 输入中有 session_id，且 state 中也有，两者必须匹配
+    # 防止多 session 互相干扰
+    hook_session = hook_input.get("session_id", "")
+    state_session = state.get("session_id", "")
+    if hook_session and state_session and hook_session != state_session:
+        # 不同 session 的状态，不干预
+        sys.exit(0)
 
     if state.get("paused"):
         if state.get("pause_reason") == "rate_limit":

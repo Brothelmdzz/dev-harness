@@ -95,7 +95,7 @@ def main():
     print(f"\n自定义方式:")
     print(f"  项目层: .claude/skills/{{name}}/SKILL.md")
     print(f"  用户层: ~/.claude/skills/{{name}}/SKILL.md")
-    print(f"  脚手架: bash $DH_HOME/scripts/scaffold.sh <name>")
+    print(f"  脚手架: bash \"${{CLAUDE_PLUGIN_ROOT}}/scripts/scaffold.sh\" <name>")
 
 if __name__ == "__main__":
     main()

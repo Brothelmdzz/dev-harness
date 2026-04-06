@@ -39,7 +39,21 @@ METRICS = {
         "description": "路线判断和阶段跳过是否正确",
         "weight": 1.0,
     },
+    "hook_defense": {
+        "description": "Stop Hook 六道防线各自能否正确触发",
+        "weight": 2.0,  # 核心指标
+    },
+    "session_isolation": {
+        "description": "Session ID 隔离是否正确过滤非本 session 状态",
+        "weight": 1.5,
+    },
+    "skill_override": {
+        "description": "三层 Skill 覆盖优先级是否正确 (L1>L2>L3)",
+        "weight": 1.0,
+    },
 }
+
+HOOK_SCRIPT = Path(__file__).parent.parent / "hooks" / "stop-hook.py"
 
 # ==================== 测试工具 ====================
 
@@ -342,6 +356,255 @@ def test_pipeline_routing():
 
     return {"metric": "pipeline_routing", "results": results}
 
+# ==================== 新增: 六道防线测试 ====================
+
+def _make_test_env():
+    """创建带 .git + .claude 的临时目录"""
+    import tempfile
+    tmpdir = tempfile.mkdtemp()
+    os.makedirs(os.path.join(tmpdir, ".git"))
+    os.makedirs(os.path.join(tmpdir, ".claude"))
+    return tmpdir
+
+def _write_state(tmpdir, state):
+    state_file = os.path.join(tmpdir, ".claude", "harness-state.json")
+    with open(state_file, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+def _read_state(tmpdir):
+    state_file = os.path.join(tmpdir, ".claude", "harness-state.json")
+    return json.loads(open(state_file, encoding="utf-8").read())
+
+def _run_hook(tmpdir, hook_input=None):
+    """运行 stop-hook.py，通过 stdin 传入 hook_input JSON"""
+    inp = json.dumps(hook_input or {})
+    result = subprocess.run(
+        ["python", str(HOOK_SCRIPT)],
+        input=inp, capture_output=True, text=True, cwd=tmpdir
+    )
+    return result.stdout.strip(), result.returncode
+
+def _base_state(session_id="test-sess", current_stage="implement", stage_status="IN_PROGRESS"):
+    """构造一个标准的测试 state"""
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {
+        "version": "1.1",
+        "session_id": session_id,
+        "project": "test",
+        "task": {"name": "test", "route": "C", "branch": "", "module": "", "started_at": now},
+        "pipeline": [
+            {"name": "plan", "status": "DONE"},
+            {"name": "implement", "status": stage_status, "phases": [
+                {"name": "Phase 1", "status": "DONE"},
+                {"name": "Phase 2", "status": "PENDING"},
+            ]},
+            {"name": "audit", "status": "PENDING", "parallel_with": "docs"},
+            {"name": "docs", "status": "PENDING", "parallel_with": "audit"},
+            {"name": "test", "status": "PENDING"},
+            {"name": "review", "status": "PENDING"},
+            {"name": "remember", "status": "PENDING"},
+        ],
+        "current_stage": current_stage,
+        "paused": False,
+        "metrics": {"max_retries": 3, "auto_continues": 0, "stages_completed": 1,
+                    "total_errors": 0, "auto_fixed": 0, "blocking": 0},
+    }
+
+def test_hook_defense():
+    """测试 Stop Hook 六道防线"""
+    import shutil
+    from datetime import datetime, timezone, timedelta
+    results = []
+
+    # 防线 1: Rate Limit 检测
+    tmpdir = _make_test_env()
+    state = _base_state()
+    _write_state(tmpdir, state)
+    out, rc = _run_hook(tmpdir, {
+        "session_id": "test-sess",
+        "last_assistant_message": "I've hit your rate limit. Please wait.",
+    })
+    reloaded = _read_state(tmpdir)
+    results.append({
+        "test": "defense_rate_limit",
+        "pass": reloaded.get("paused") == True and reloaded.get("pause_reason") == "rate_limit",
+        "detail": f"paused={reloaded.get('paused')}, reason={reloaded.get('pause_reason')}"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 防线 2: 上下文溢出放行
+    tmpdir = _make_test_env()
+    state = _base_state()
+    _write_state(tmpdir, state)
+    out, rc = _run_hook(tmpdir, {
+        "session_id": "test-sess",
+        "context_window": {"used": 850000, "total": 1000000},
+    })
+    results.append({
+        "test": "defense_context_overflow",
+        "pass": "continue" in out.lower() or '"continue"' in out,
+        "detail": f"output='{out[:80]}'"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 防线 3: 单阶段超时
+    tmpdir = _make_test_env()
+    state = _base_state()
+    old_time = (datetime.now(timezone.utc) - timedelta(minutes=35)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    state["pipeline"][1]["started_at"] = old_time
+    _write_state(tmpdir, state)
+    out, rc = _run_hook(tmpdir, {"session_id": "test-sess"})
+    results.append({
+        "test": "defense_stage_timeout",
+        "pass": rc == 0 and ("block" not in out.lower() if out else True),
+        "detail": f"rc={rc}, output='{out[:60]}'"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 防线 4: 总运行时长超时
+    tmpdir = _make_test_env()
+    state = _base_state()
+    old_time = (datetime.now(timezone.utc) - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    state["task"]["started_at"] = old_time
+    _write_state(tmpdir, state)
+    out, rc = _run_hook(tmpdir, {"session_id": "test-sess"})
+    results.append({
+        "test": "defense_total_timeout",
+        "pass": rc == 0 and ("block" not in out.lower() if out else True),
+        "detail": f"rc={rc}, output='{out[:60]}'"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 防线 5: 滑动窗口死循环
+    tmpdir = _make_test_env()
+    state = _base_state()
+    _write_state(tmpdir, state)
+    # 写入 12 条最近 5 分钟内的 auto_continue 事件
+    eval_log = os.path.join(tmpdir, ".claude", "harness-eval.jsonl")
+    now = datetime.now(timezone.utc)
+    with open(eval_log, "w", encoding="utf-8") as f:
+        for i in range(12):
+            ts = (now - timedelta(seconds=i*20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            f.write(json.dumps({"timestamp": ts, "event": "auto_continue", "stage": "implement"}) + "\n")
+    out, rc = _run_hook(tmpdir, {"session_id": "test-sess"})
+    results.append({
+        "test": "defense_sliding_window",
+        "pass": rc == 0 and ("block" not in out.lower() if out else True),
+        "detail": f"rc={rc}, output='{out[:60]}'"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 防线 6: error_count >= max_retries
+    tmpdir = _make_test_env()
+    state = _base_state()
+    state["pipeline"][1]["phases"][1]["error_count"] = 3
+    _write_state(tmpdir, state)
+    out, rc = _run_hook(tmpdir, {"session_id": "test-sess"})
+    results.append({
+        "test": "defense_error_max_retries",
+        "pass": rc == 0 and out == "",
+        "detail": f"rc={rc}, output='{out[:60]}'"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return {"metric": "hook_defense", "results": results}
+
+# ==================== 新增: Session ID 隔离测试 ====================
+
+def test_session_isolation():
+    """测试 Session ID 隔离"""
+    import shutil
+    results = []
+
+    # 测试 1: 匹配的 session_id → 正常续跑
+    tmpdir = _make_test_env()
+    state = _base_state(session_id="aaa111")
+    _write_state(tmpdir, state)
+    out, rc = _run_hook(tmpdir, {"session_id": "aaa111"})
+    results.append({
+        "test": "session_match_continues",
+        "pass": "block" in out.lower() or "Phase 2" in out,
+        "detail": f"output='{out[:80]}'"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 测试 2: 不匹配的 session_id → 跳过不干预
+    tmpdir = _make_test_env()
+    state = _base_state(session_id="aaa111")
+    _write_state(tmpdir, state)
+    out, rc = _run_hook(tmpdir, {"session_id": "bbb222"})
+    results.append({
+        "test": "session_mismatch_skips",
+        "pass": rc == 0 and out == "",
+        "detail": f"rc={rc}, output='{out}'"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return {"metric": "session_isolation", "results": results}
+
+# ==================== 新增: Skill 覆盖优先级测试 ====================
+
+def test_skill_override():
+    """测试 L1 > L2 > L3 覆盖优先级"""
+    import tempfile, shutil
+    results = []
+
+    # 测试 1: L1 项目层覆盖 — 在项目目录放一个 .claude/skills/audit/SKILL.md
+    tmpdir = _make_test_env()
+    l1_dir = os.path.join(tmpdir, ".claude", "skills", "audit")
+    os.makedirs(l1_dir)
+    with open(os.path.join(l1_dir, "SKILL.md"), "w") as f:
+        f.write("---\nname: audit\ndescription: project audit\n---\n# L1 Audit")
+    out, rc = run_cmd(f"python {RESOLVER_SCRIPT} audit --verbose --project-dir {tmpdir}")
+    if rc == 0 and out:
+        try:
+            info = json.loads(out)
+            results.append({
+                "test": "l1_overrides_l3",
+                "pass": info.get("level") == "L1",
+                "detail": f"{info.get('level')}:{info.get('name')}"
+            })
+        except json.JSONDecodeError:
+            results.append({"test": "l1_overrides_l3", "pass": False, "detail": f"JSON parse error: {out[:60]}"})
+    else:
+        results.append({"test": "l1_overrides_l3", "pass": False, "detail": f"rc={rc}, out={out[:60]}"})
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 测试 2: 无 L1 → 应 fallback 到 L2 或 L3
+    tmpdir = _make_test_env()
+    out, rc = run_cmd(f"python {RESOLVER_SCRIPT} audit --verbose --project-dir {tmpdir}")
+    if rc == 0 and out:
+        try:
+            info = json.loads(out)
+            results.append({
+                "test": "no_l1_fallback",
+                "pass": info.get("level") in ("L2", "L3"),
+                "detail": f"{info.get('level')}:{info.get('name')}"
+            })
+        except json.JSONDecodeError:
+            results.append({"test": "no_l1_fallback", "pass": False, "detail": f"JSON parse error: {out[:60]}"})
+    else:
+        results.append({"test": "no_l1_fallback", "pass": False, "detail": f"rc={rc}, out={out[:60]}"})
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 测试 3: L3 内置兜底 — wiki 阶段通常只有 L3
+    out, rc = run_cmd(f"python {RESOLVER_SCRIPT} wiki --verbose")
+    if rc == 0 and out:
+        try:
+            info = json.loads(out)
+            results.append({
+                "test": "l3_builtin_fallback",
+                "pass": info.get("level") == "L3",
+                "detail": f"{info.get('level')}:{info.get('name')}"
+            })
+        except json.JSONDecodeError:
+            results.append({"test": "l3_builtin_fallback", "pass": False, "detail": f"JSON parse error: {out[:60]}"})
+    else:
+        results.append({"test": "l3_builtin_fallback", "pass": False, "detail": f"rc={rc}, out={out[:60]}"})
+
+    return {"metric": "skill_override", "results": results}
+
 # ==================== 评测执行器 ====================
 
 ALL_TESTS = {
@@ -350,6 +613,9 @@ ALL_TESTS = {
     "auto_continue": test_auto_continue,
     "gate_detection": test_gate_detection,
     "pipeline_routing": test_pipeline_routing,
+    "hook_defense": test_hook_defense,
+    "session_isolation": test_session_isolation,
+    "skill_override": test_skill_override,
 }
 
 def run_scenario(name):

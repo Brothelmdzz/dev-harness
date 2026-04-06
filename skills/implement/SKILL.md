@@ -22,8 +22,8 @@ model: opus
 ### 第三步: 运行门禁
 
 ```bash
-# 检测技术栈（$DH_HOME 在 /dev 启动时已设置）
-bash "$DH_HOME/scripts/detect-stack.sh"
+# 检测技术栈（${CLAUDE_PLUGIN_ROOT} 在 /dev 启动时已设置）
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-stack.sh"
 
 # 如果项目有 .claude/dev-config.yml，优先用项目定义的门禁命令
 # 否则用检测到的默认命令
@@ -35,11 +35,11 @@ bash "$DH_HOME/scripts/detect-stack.sh"
 
 ```bash
 # 门禁通过
-python "$DH_HOME/scripts/harness.py" update implement IN_PROGRESS \
+python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update implement IN_PROGRESS \
   --phase {N} --gate build=pass --gate test=pass
 
 # 门禁失败
-python "$DH_HOME/scripts/harness.py" update implement IN_PROGRESS \
+python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update implement IN_PROGRESS \
   --phase {N} --error --auto-fixed
 ```
 

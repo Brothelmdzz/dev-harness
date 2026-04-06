@@ -103,7 +103,7 @@ copy_config() {
 
 list_templates() {
     echo "可用配置模板:"
-    for f in "$TEMPLATES_DIR"/dev-config-*.yml 2>/dev/null; do
+    for f in "$TEMPLATES_DIR"/dev-config-*.yml; do
         if [ -f "$f" ]; then
             local name=$(basename "$f" | sed 's/dev-config-//;s/.yml//')
             local desc=$(head -2 "$f" | tail -1 | sed 's/^# *//')

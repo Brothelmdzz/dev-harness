@@ -7,7 +7,7 @@ Dev Harness — 状态管理 + HUD 面板 + Hook 入口
   python harness.py hud [--watch]
   python harness.py eval [--report]
 """
-import json, os, sys, time, glob, argparse
+import json, os, sys, time, glob, argparse, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -79,8 +79,11 @@ def cmd_init(args):
             s["status"] = "SKIP"
         pipeline.append(s)
 
+    session_id = args.session_id or uuid.uuid4().hex[:12]
+
     state = {
-        "version": "1.0",
+        "version": "1.1",
+        "session_id": session_id,
         "project": PROJECT_ROOT.name,
         "task": {
             "name": args.task_name,
@@ -102,7 +105,7 @@ def cmd_init(args):
         },
     }
     save_state(state)
-    print(json.dumps({"action": "init", "task": args.task_name, "route": route}, ensure_ascii=False))
+    print(json.dumps({"action": "init", "task": args.task_name, "route": route, "session_id": session_id}, ensure_ascii=False))
 
 # ==================== 自动续跑检查（Stop Hook 调用） ====================
 
@@ -603,6 +606,168 @@ def cmd_rich_hud(args):
 
             time.sleep(1)
 
+# ==================== Web HUD (localhost:1603) ====================
+
+WEB_HUD_PORT = 1603
+
+WEB_HUD_HTML = r"""<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>Dev Harness HUD</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#c9d1d9; --dim:#8b949e;
+          --green:#3fb950; --yellow:#d29922; --red:#f85149; --blue:#58a6ff; --purple:#bc8cff; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',Consolas,monospace; font-size:14px; padding:20px; }
+  h1 { color:var(--blue); font-size:18px; margin-bottom:4px; }
+  .meta { color:var(--dim); font-size:12px; margin-bottom:16px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
+  .card h2 { color:var(--blue); font-size:14px; margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:8px; }
+  .stage { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border); }
+  .stage:last-child { border-bottom:none; }
+  .stage .icon { width:24px; text-align:center; font-weight:bold; }
+  .stage .name { width:100px; }
+  .stage .status { flex:1; }
+  .stage .dur { width:60px; text-align:right; color:var(--dim); }
+  .stage.current { background:rgba(88,166,255,0.08); border-radius:4px; margin:0 -8px; padding:6px 8px; }
+  .DONE { color:var(--green); } .IN_PROGRESS { color:var(--yellow); }
+  .SKIP { color:var(--dim); } .PENDING { color:var(--text); }
+  .FAILED,.BLOCKED { color:var(--red); }
+  .phase { padding:4px 0 4px 32px; font-size:13px; color:var(--dim); }
+  .phase .gate { display:inline-block; margin-left:8px; font-size:11px; }
+  .gate.pass { color:var(--green); } .gate.fail { color:var(--red); }
+  .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .metric { text-align:center; }
+  .metric .val { font-size:24px; font-weight:bold; }
+  .metric .label { font-size:11px; color:var(--dim); margin-top:4px; }
+  .log { max-height:300px; overflow-y:auto; font-size:12px; line-height:1.6; }
+  .log .entry { padding:2px 0; }
+  .log .ts { color:var(--dim); }
+  .no-data { color:var(--dim); text-align:center; padding:40px; }
+  .session-id { color:var(--purple); font-size:12px; }
+</style>
+</head>
+<body>
+<h1>Dev Harness HUD</h1>
+<div class="meta">Auto-refresh 2s | <span id="updated"></span></div>
+<div id="app"><div class="no-data">等待 harness 会话启动...</div></div>
+<script>
+async function refresh() {
+  try {
+    const r = await fetch('/api/state');
+    if (!r.ok) { document.getElementById('app').innerHTML = '<div class="no-data">等待 harness 会话启动...</div>'; return; }
+    const s = await r.json();
+    render(s);
+  } catch(e) {}
+}
+function render(s) {
+  const task = s.task || {};
+  const metrics = s.metrics || {};
+  const pipeline = s.pipeline || [];
+  const current = s.current_stage || '';
+  document.getElementById('updated').textContent = (s.updated_at||'').replace('T',' ').replace('Z','');
+
+  let stagesHtml = '';
+  for (const st of pipeline) {
+    const isCur = st.name === current;
+    const icon = st.status==='DONE'?'✓':st.status==='IN_PROGRESS'?'▶':st.status==='SKIP'?'—':st.status==='FAILED'?'✗':'○';
+    const dur = calcDur(st);
+    stagesHtml += `<div class="stage ${isCur?'current':''}">
+      <span class="icon ${st.status}">${icon}</span>
+      <span class="name">${st.name}</span>
+      <span class="status ${st.status}">${st.status}</span>
+      <span class="dur">${dur}</span>
+    </div>`;
+    if (st.name==='implement' && st.phases) {
+      for (const p of st.phases) {
+        const pi = p.status==='DONE'?'✓':p.status==='IN_PROGRESS'?'▶':'○';
+        let gs = '';
+        if (p.gates) for (const [k,v] of Object.entries(p.gates))
+          gs += `<span class="gate ${v?'pass':'fail'}">${k}:${v?'✓':'✗'}</span>`;
+        stagesHtml += `<div class="phase"><span class="${p.status}">${pi}</span> ${p.name||'Phase'} ${gs}</div>`;
+      }
+    }
+  }
+
+  const done = pipeline.filter(x=>x.status==='DONE').length;
+  const total = pipeline.filter(x=>x.status!=='SKIP').length;
+
+  document.getElementById('app').innerHTML = `
+    <div class="grid">
+      <div class="card">
+        <h2>任务: ${task.name||'?'} <span class="session-id">${s.session_id?'#'+s.session_id:''}</span></h2>
+        <div style="color:var(--dim);font-size:12px;margin-bottom:12px">
+          Route: ${task.route||'?'} | Branch: ${task.branch||'-'} | Module: ${task.module||'-'}
+        </div>
+        ${stagesHtml}
+      </div>
+      <div class="card">
+        <h2>指标</h2>
+        <div class="metrics">
+          <div class="metric"><div class="val" style="color:var(--blue)">${done}/${total}</div><div class="label">进度</div></div>
+          <div class="metric"><div class="val" style="color:var(--yellow)">${metrics.auto_continues||0}</div><div class="label">自动续跑</div></div>
+          <div class="metric"><div class="val" style="color:var(--red)">${metrics.total_errors||0}</div><div class="label">错误</div></div>
+          <div class="metric"><div class="val" style="color:var(--green)">${metrics.auto_fixed||0}</div><div class="label">自动修复</div></div>
+        </div>
+        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;color:var(--dim)">
+          阻断: ${metrics.blocking||0} | 重试上限: ${metrics.max_retries||3} | 已完成阶段: ${metrics.stages_completed||0}
+        </div>
+      </div>
+    </div>`;
+}
+function calcDur(st) {
+  if (!st.started_at || !st.completed_at) return '';
+  const d = (new Date(st.completed_at) - new Date(st.started_at)) / 1000;
+  return d > 60 ? Math.floor(d/60)+'m'+('0'+Math.floor(d%60)).slice(-2)+'s' : Math.floor(d)+'s';
+}
+setInterval(refresh, 2000);
+refresh();
+</script>
+</body>
+</html>"""
+
+def cmd_web_hud(args):
+    """启动 Web HUD 面板 (默认 localhost:1603)"""
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+    import threading
+
+    port = args.port or WEB_HUD_PORT
+
+    class HUDHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/api/state':
+                state = load_state()
+                if state:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+                    self.wfile.write(json.dumps(state, ensure_ascii=False).encode('utf-8'))
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            else:
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/html; charset=utf-8')
+                self.end_headers()
+                self.wfile.write(WEB_HUD_HTML.encode('utf-8'))
+
+        def log_message(self, format, *a):
+            pass  # 静默日志
+
+    server = HTTPServer(('0.0.0.0', port), HUDHandler)
+    print(f"Dev Harness Web HUD: http://localhost:{port}")
+    print(f"监控项目: {PROJECT_ROOT}")
+    print("Ctrl+C 停止")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        server.shutdown()
+        print("\nWeb HUD 已停止")
+
 # ==================== CLI 入口 ====================
 
 def main():
@@ -615,6 +780,7 @@ def main():
     p_init.add_argument("--route", default="C")
     p_init.add_argument("--module", default="")
     p_init.add_argument("--branch", default="")
+    p_init.add_argument("--session-id", dest="session_id", default="")
 
     # check-continue (legacy, used by old stop-hook)
     sub.add_parser("check-continue")
@@ -644,6 +810,10 @@ def main():
     p_alog = sub.add_parser("autoloop-log")
     p_alog.add_argument("--lines", type=int, default=20)
 
+    # web-hud
+    p_web = sub.add_parser("web-hud")
+    p_web.add_argument("--port", type=int, default=WEB_HUD_PORT)
+
     # log (write autoloop log entry)
     p_log = sub.add_parser("log")
     p_log.add_argument("stage")
@@ -670,6 +840,8 @@ def main():
         cmd_autoloop_status(args)
     elif args.cmd == "autoloop-log":
         cmd_autoloop_log(args)
+    elif args.cmd == "web-hud":
+        cmd_web_hud(args)
     elif args.cmd == "log":
         autoloop_log(args.stage, args.phase, args.action, args.result, args.detail)
     else:
