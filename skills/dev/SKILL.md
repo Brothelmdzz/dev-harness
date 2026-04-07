@@ -121,52 +121,105 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/skill-resolver.py" <stage_name>
 - 产出: `.claude/plans/*.md`
 - **用户说"通过"后，更新状态并立即进入 implement**
 
-### implement 阶段（多 Phase 循环）
+### implement 阶段（Orchestrator 模式）
 
-这是最复杂的阶段。**v3.0 新增 Worktree 隔离**:
+读取 plan 文件 → 解析出 Phase 列表 → 写入 harness-state.json 的 phases 数组
+
+**Phase 数量判断**:
+- **≤ 3 个 Phase** → 串行模式（逐个执行）
+- **> 3 个 Phase** → Orchestrator 模式（分析依赖，批次并行）
+
+#### 串行模式（≤ 3 Phase）
 
 ```
 开始前:
   bash "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.sh" create dh-implement
-  # 在隔离分支上操作（如果 git 可用）
 
-读取 plan 文件 → 解析出 Phase 列表
-                → 写入 harness-state.json 的 phases 数组
-  |
-  v
 对每个 Phase:
   1. 更新 phase.status = "IN_PROGRESS"
   2. 调用 implement Skill（/implement_plan 或 /codex:rescue）
-  3. 运行门禁:
-     - 检测到的 build 命令
-     - 检测到的 test 命令
-     - /validate_plan（如有 plan 文件）
-  4. 门禁全过 → phase.status = "DONE"，更新 gates
-     门禁失败 → error_count++，自动修复，重试
+  3. 运行门禁（build + test）
+  4. 门禁全过 → phase.status = "DONE"
      3 次失败 → worktree cleanup → 停下来找人
-  5. **直接继续下一个 Phase，不等用户**
+  5. 直接继续下一个 Phase
 
-全部完成后:
+全部完成:
   bash "${CLAUDE_PLUGIN_ROOT}/scripts/worktree.sh" merge
-  # 合并回主分支
 ```
 
-**降级**: 如果不在 git 仓库中，跳过 worktree，直接在工作目录操作。
+#### Orchestrator 模式（> 3 Phase）
+
+```
+1. 分析 Plan 中所有 Phase 的依赖关系:
+   - 修改同一文件/模块的 Phase → 不可并行（串行）
+   - 完全独立的 Phase → 可并行
+
+2. 将 Phase 分为批次:
+   - 并行批次 1: [Phase A, Phase B]  ← 互相独立
+   - 串行: Phase C                    ← 依赖 Phase A
+   - 并行批次 2: [Phase D, Phase E]  ← 互相独立
+
+3. 对每个并行批次:
+   a. 为每个 Phase 启动 Worker Agent:
+      Agent(
+        name="worker-{phase_name}",
+        isolation="worktree",
+        run_in_background=true,
+        model="opus",
+        prompt="实现 Phase N: {具体内容}。
+               完成后运行门禁: {build_cmd} && {test_cmd}
+               门禁通过:
+                 python harness.py worker-report {id} --phase {N} --status DONE --branch {branch}
+               门禁失败 3 次:
+                 python harness.py worker-report {id} --phase {N} --status FAILED"
+      )
+
+   b. 等待当前批次所有 Worker 完成:
+      python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" worker-status
+      → 检查 all_done == true
+
+   c. 有 FAILED Worker → 停下报告用户
+      全部 DONE → 合并 worktree 分支，继续下一批次
+
+4. 所有批次完成:
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" worker-cleanup
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update implement DONE
+```
+
+**合并策略**: 每批次完成后按顺序 `git merge --no-ff worker-branch`。冲突 → 停下找用户。
+
+**降级**: Worker 启动失败 → 自动降级为串行模式。不在 git 仓库 → 跳过 worktree 直接操作。
 
 **门禁命令来源**（优先级）:
 1. `.claude/dev-config.yml` 中定义的 → 项目指定
 2. `detect-stack.sh` 自动检测的 → 通用默认
 
-### audit + docs 阶段（并行）
-- 两个阶段**同时启动**（用 background Agent）
-- audit 解析到 L1:audit-logic（EHub）或 L3:generic-audit
-- docs 解析到 L1:update-api-docs 或 L3:generic-docs
-- 两者都 DONE 后才进入下一阶段
+### post-implement 并行组（audit + docs + test）
 
-### test 阶段
-- 解析到 L1:test-apis（EHub E2E）或 L3:generic-test
-- P0 自动修复 → 重编译 → 重测
-- 3 轮修不掉 → 停
+implement 完成后，以下三个阶段**同时启动**：
+
+```
+1. 更新全部为 IN_PROGRESS:
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update audit IN_PROGRESS
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update docs IN_PROGRESS
+   python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update test IN_PROGRESS
+
+2. 用 background Agent 并行执行三路:
+   - Agent(name="audit-worker", run_in_background=true):
+     解析 audit Skill → 执行 → harness.py update audit DONE
+   - Agent(name="docs-worker", run_in_background=true):
+     解析 docs Skill → 执行 → harness.py update docs DONE
+   - Agent(name="test-worker", run_in_background=true):
+     解析 test Skill → 执行 → harness.py update test DONE
+
+3. 等待三路全部完成（background Agent 完成时会通知）
+
+4. 三路都 DONE → 进入 review 阶段
+```
+
+**注意**: 每个 background Agent 独立更新自己负责的阶段状态。
+filelock 保证并发写入安全。如果任一阶段失败超过 max_retries，
+该阶段标记 FAILED，其他阶段继续。全部完成后汇总失败信息。
 
 ### review 阶段
 - 通常用 L3:generic-review（三路联合审查）

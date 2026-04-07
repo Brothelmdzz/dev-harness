@@ -19,6 +19,7 @@ v3.0 改进:
 import json, sys, os
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+from filelock import FileLock
 
 # ==================== 常量 ====================
 
@@ -371,6 +372,27 @@ def main():
         state["metrics"]["stages_completed"] = state["metrics"].get("stages_completed", 0) + 1
         save_state(state, state_file)
 
+    # ==================== 并行组检查 ====================
+    current_group = stage.get("parallel_group")
+    if current_group and stage.get("status") == "DONE":
+        # 并行组内一个阶段完成，检查组内其他成员
+        group_stages = [s for s in pipeline if s.get("parallel_group") == current_group]
+        pending = [s for s in group_stages if s["status"] in ("PENDING", "IN_PROGRESS")]
+        if pending:
+            # 组内还有未完成的，不推进
+            sys.exit(0)
+        # 组内全部完成，推进到下一阶段
+        last_in_group = group_stages[-1]["name"]
+        next_names = find_next(pipeline, last_in_group)
+        if not next_names:
+            sys.exit(0)
+        state["current_stage"] = next_names[0]
+        state["metrics"]["auto_continues"] = state["metrics"].get("auto_continues", 0) + 1
+        save_state(state, state_file)
+        reason = f"并行组 {current_group} 全部完成（{'、'.join(s['name'] for s in group_stages)}）。继续执行 {next_names[0]} 阶段。"
+        output_block(reason, state, project_root)
+        return
+
     if stage.get("status") == "DONE":
         next_names = find_next(pipeline, current)
         if not next_names:
@@ -381,30 +403,36 @@ def main():
         if len(next_names) == 1:
             reason = f"上一阶段 {current} 已完成。继续执行 {next_names[0]} 阶段。先运行 skill-resolver 确认用哪个 Skill，然后执行。完成后更新 harness-state.json。"
         else:
-            names = " 和 ".join(next_names)
-            reason = f"上一阶段 {current} 已完成。并行启动 {names} 阶段。用 background Agent 并行执行两者。完成后更新 harness-state.json。"
+            names = "、".join(next_names)
+            reason = (
+                f"上一阶段 {current} 已完成。并行启动 {names} 阶段。\n"
+                f"用 Agent tool 的 run_in_background=true 同时启动 {len(next_names)} 个 background Agent，"
+                f"每个 Agent 负责一个阶段：解析 Skill → 执行 → harness.py update <stage> DONE。\n"
+                f"等待所有 background Agent 完成后，再推进到下一阶段。"
+            )
         output_block(reason, state, project_root)
         return
 
     sys.exit(0)
 
 def find_next(pipeline, current_name):
+    """找到下一组可执行阶段（支持 parallel_group）"""
     found = False
-    result = []
     for s in pipeline:
         if s["name"] == current_name:
             found = True
             continue
-        if found and s.get("status") in ("PENDING", "WAITING"):
-            result.append(s["name"])
-            parallel = s.get("parallel_with")
-            if parallel:
-                for ps in pipeline:
-                    if ps["name"] == parallel and ps.get("status") in ("PENDING", "WAITING"):
-                        if ps["name"] not in result:
-                            result.append(ps["name"])
-            break
-    return result
+        if not found:
+            continue
+        if s.get("status") not in ("PENDING", "WAITING"):
+            continue
+        group = s.get("parallel_group")
+        if group:
+            return [ps["name"] for ps in pipeline
+                    if ps.get("parallel_group") == group
+                    and ps.get("status") in ("PENDING", "WAITING")]
+        return [s["name"]]
+    return []
 
 def output_block(reason, state, project_root):
     decision = {"decision": "block", "reason": reason}
@@ -413,7 +441,9 @@ def output_block(reason, state, project_root):
 
 def save_state(state, path):
     state["updated_at"] = now_iso()
-    path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    lock = FileLock(str(path) + ".lock", timeout=5)
+    with lock:
+        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 if __name__ == "__main__":
     main()

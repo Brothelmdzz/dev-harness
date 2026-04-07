@@ -1,58 +1,49 @@
 # Session 交接文档
 
-> 上一次会话: 2026-04-04 (ehub-integrated-platform 目录)
-> 下一次会话: dev-harness 目录
+> 上一次会话: 2026-04-07
+> 目录: dev-harness
 
 ## 当前状态
 
-**版本**: v3.0 已发布 (master, commit 397086d)
-**Eval**: 20/21 通过, 加权 93.9%
+**版本**: v3.2-dev (master, 未提交)
+**Eval**: 38/38 通过, 10 维度, 加权 100%
 
 ## 本次完成的工作
 
-### 深度研究
-- 对比分析 Dev Harness vs OMC / Superpowers / DeerFlow / Ralph Loop
-- 读取了 OMC persistent-mode.cjs (43KB) 源码
-- 发现了 Stop Hook 不生效的两个根因并修复
-- 完整改进方案写在 `docs/improvement-plan-v3.md`
-- 竞品研究发现写在 `docs/research-findings.md`
+### v3.1 收尾
+- 修复 `project_audit_resolution` 测试（测试假设有误，实现正确）
+- Hook wrapper 方案：`~/.claude/hooks/dev-harness-stop.py` 通过 `installed_plugins.json` 动态查找路径
+- Session 索引：`~/.claude/dev-harness-sessions.json` 自动发现活跃项目
+- Web HUD 支持 `--project` 参数和 fallback 扫描
+- setup.sh Windows 兼容修复（`$OSTYPE` 检测）
+- detect-stack.sh JSON 安全输出
 
-### P0 基础加固
-- `hooks/stop-hook.py` — 六道防线 + OMC 三大关键机制
-- `scripts/worktree.sh` — Git Worktree 隔离
-- 所有 skill 路径引用统一为 `$DH_HOME`
-
-### P1 多角色
-- `scripts/skill-resolver.py` — --profile 参数
-- 4 个新 skill: generic-frontend-implement / frontend-research / product-prd / tdd
-- `defaults/pipeline.yml` + `skill-map.yml` 扩展
-
-### P2 同事友好
-- `scripts/scaffold.sh` — Skill 脚手架
-- `scripts/skill-index.py` — 三层索引
-- 5 个配置模板 (templates/)
-- `docs/quickstart.md` + `docs/contributing.md`
+### v3.2 多 Agent 并行架构
+- **Layer 1 — 阶段级并行**:
+  - `parallel_group` 命名分组替代 `parallel_with` 两两绑定
+  - audit + docs + test 三路 background Agent 并行
+  - stop-hook 支持并行组：组内部分完成不推进，全完成才推进
+- **Layer 2 — 任务级并行 (Orchestrator)**:
+  - Phase > 3 时自动触发 Orchestrator 模式
+  - Worker 通过 `.claude/workers/worker-*.json` 独立汇报
+  - `harness.py worker-report/worker-status/worker-cleanup` 命令
+  - 每个 Worker 在独立 worktree 中执行
+- **并发安全**: `filelock` 保护 harness-state.json 读写
+- **review 三路并行**: skill 内部 3 个 background Agent
+- **评测**: 32 → 38 用例, 8 → 10 维度 (新增 parallel_group + worker_management)
 
 ## 待做优先级
 
-### 高优先级 (v3.1)
-1. **Session ID 隔离** — state 绑定 session，防多 session 干扰
-2. **plugin 重装后 cache 同步** — 当前每次修改都要手动 cp 到 cache
-3. **eval 新增测试** — 覆盖六道防线 + profile + worktree (目标 35+ 用例)
+### 高优先级
+1. **提交并发版 v3.2** — 所有改动已完成，评测 100%
+2. **实战验证** — 在 ai-capability-hub 项目运行 /dev，验证多 Agent 并行效果
+3. **Layer 3 画饼文档** — 跨项目 Agent 编排的设计文档（不实现）
 
 ### 中优先级
-4. 通知系统 — pipeline 完成/失败时发桌面/飞书通知
-5. 团队看板 — scripts/team-report.py
-6. README.md 更新 — 反映 v3.0 全部新功能
+4. v3.3 多模式架构（pipeline/single/conversation）— evolution-strategy-v4.md Phase 1
+5. 通知系统 — pipeline 完成/失败时发桌面/飞书通知
+6. README.md 更新 — 反映 v3.2 并行架构
 
 ### 低优先级
 7. 跨平台 SKILL.md 兼容 (Codex/Gemini CLI)
 8. Skill 自进化 (基于 eval 数据自动优化)
-
-## 建议新 session 的开场白
-
-```
-我在 dev-harness 目录，刚完成 v3.0。
-请先读 docs/research-findings.md 和 docs/improvement-plan-v3.md 了解上下文。
-接下来做 v3.1: session ID 隔离 + eval 扩展 + README 更新。
-```

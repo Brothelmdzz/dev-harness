@@ -9,7 +9,7 @@ Dev Harness 是一个 Claude Code 插件，将 Claude Code 变成自驱动开发
 ## 常用命令
 
 ```bash
-# ���测（21 个测试用例，5 维度）
+# 评测（38 个测试用例，10 维度）
 python eval/eval-runner.py run-all
 python eval/eval-runner.py report
 python eval/eval-runner.py compare <before.json> <after.json>
@@ -49,7 +49,11 @@ bash scripts/setup.sh
 
 ### 路径机制
 
-插件安装后，所有脚本通过 Claude Code 官方环境变量 `${CLAUDE_PLUGIN_ROOT}` 定位。该变量在 Skill/Agent/Hook 内容中自动替换，在子进程中作为环境变量导出。hooks 通过 `hooks/hooks.json` 自动注册，无需手动修改 settings.json。
+插件安装后，所有脚本通过 Claude Code 官方环境变量 `${CLAUDE_PLUGIN_ROOT}` 定位。该变量在 Skill/Agent/Hook 内容中自动替换，在子进程中作为环境变量导出。
+
+**Hook 注册机制（两层）**：
+1. 首次安装：Claude Code 发现 `hooks/hooks.json` → 展开 `${CLAUDE_PLUGIN_ROOT}` 写入 `settings.json`
+2. 版本升级防护：`scripts/setup.sh` 部署 wrapper（`~/.claude/hooks/dev-harness-stop.py`）→ 通过 `installed_plugins.json` 动态查找实际路径，避免版本号硬编码失效
 
 ### 核心流
 
@@ -96,16 +100,26 @@ bash scripts/setup.sh
 
 `harness-state.json` 中的 `session_id` 字段绑定创建它的会话。stop-hook.py 在收到带 session_id 的 hook 输入时，只处理匹配的 session，防止多 session 互相干扰。
 
+**中央 Session 索引**：`~/.claude/dev-harness-sessions.json` 记录 session_id → 项目路径映射。`web-hud` / `hud` 从索引自动发现活跃项目，无需手动指定 `--project`。索引找不到时 fallback 扫描 `C:\work\*` 等常见目录。评测模式（`DH_EVAL=1`）下跳过注册，防止临时目录污染。
+
 ### 状态文件
 
 `.claude/harness-state.json` 是整个流水线的唯一状态源。关键字段：`session_id`, `current_stage`, `pipeline[].status` (PENDING/IN_PROGRESS/DONE/SKIP/FAILED), `metrics`, `worktree`。
 
 ### 12 个 Agent
 
-定义在 `agents/` 目录，按模型分层：
-- **opus**: architect, code-reviewer, planner（深度推理）
-- **sonnet**: executor, debugger, qa-tester, security-reviewer, wiki-syncer, auto-loop（标准实现）
-- **haiku**: explore, gate-checker, skill-router（快速搜索/路由）
+定义在 `agents/` 目录，全部使用 **opus** 模型：
+architect, code-reviewer, planner, executor, debugger, qa-tester, security-reviewer, wiki-syncer, auto-loop, explore, gate-checker, skill-router
+
+### 多 Agent 并行
+
+**Layer 1 — 阶段级并行**: pipeline.yml 中 `parallel_group` 字段声明可并行的阶段组。implement 完成后，audit + docs + test 三路同时启动（各自一个 background Agent），全部完成后进入 review。
+
+**Layer 2 — 任务级并行 (Orchestrator 模式)**: 当 Plan 中 Phase > 3 个时自动触发。Orchestrator 分析 Phase 依赖关系，将无依赖的 Phase 分为并行批次，每个 Phase 交给一个 Worker Agent 在独立 worktree 中执行。Worker 通过 `.claude/workers/worker-*.json` 汇报状态，Orchestrator 轮询合并，完成后自动清理 Worker 文件。
+
+**并发安全**: harness-state.json 的读写通过 `filelock` 保护，防止多 Agent 竞态。
+
+**review 三路并行**: 在 generic-review skill 内部完成（code-reviewer + security-reviewer + architect 三个 background Agent），不走 pipeline 层。
 
 ### 目录结构职责
 
@@ -114,7 +128,7 @@ bash scripts/setup.sh
 | `skills/dev/` | `/dev` 入口编排器 SKILL.md |
 | `skills/generic-*/` | L3 内置 Skill（audit/implement/research/review/test/docs/wiki 等） |
 | `scripts/` | Python/Shell 工具脚本（状态管理、Skill 解析、技术栈检测、worktree、Web HUD） |
-| `hooks/` | stop-hook.py（续跑）+ hooks.json（自动注册） |
+| `hooks/` | stop-hook.py（续跑）+ hooks.json（自动注册）+ stop-hook-wrapper.py（版本追踪） |
 | `agents/` | 12 个 Agent 的 Markdown 定义文件 |
 | `defaults/` | pipeline.yml（阶段定义）+ skill-map.yml（别名映射） |
 | `templates/` | 项目配置模板（springboot/python/nextjs/monorepo/minimal） |

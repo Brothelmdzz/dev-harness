@@ -10,11 +10,17 @@ Dev Harness — 状态管理 + HUD 面板 + Hook 入口
 import json, os, sys, time, glob, argparse, uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from filelock import FileLock
 
 # ==================== 路径 ====================
 
-def find_project_root():
-    """向上查找 .git 目录定位项目根"""
+def find_project_root(override=None):
+    """定位项目根：override 参数 > DH_PROJECT 环境变量 > 向上查找 .git"""
+    if override:
+        return Path(override).resolve()
+    env = os.environ.get("DH_PROJECT")
+    if env:
+        return Path(env).resolve()
     p = Path.cwd()
     while p != p.parent:
         if (p / ".git").exists():
@@ -28,18 +34,82 @@ CONFIG_FILE = PROJECT_ROOT / ".claude" / "dev-config.yml"
 PLANS_DIR = PROJECT_ROOT / ".claude" / "plans"
 EVAL_LOG = PROJECT_ROOT / ".claude" / "harness-eval.jsonl"
 
+# 中央 session 索引：session_id → 项目路径
+SESSION_INDEX = Path.home() / ".claude" / "dev-harness-sessions.json"
+
+def load_session_index():
+    if SESSION_INDEX.exists():
+        try:
+            return json.loads(SESSION_INDEX.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+def save_session_index(index):
+    SESSION_INDEX.parent.mkdir(parents=True, exist_ok=True)
+    SESSION_INDEX.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def register_session(session_id, project_path):
+    """注册 session → 项目路径映射"""
+    index = load_session_index()
+    index[session_id] = {
+        "project": str(project_path),
+        "started_at": now_iso(),
+    }
+    # 清理超过 50 条的旧记录
+    if len(index) > 50:
+        sorted_keys = sorted(index, key=lambda k: index[k].get("started_at", ""), reverse=True)
+        index = {k: index[k] for k in sorted_keys[:50]}
+    save_session_index(index)
+
+def find_latest_session_project():
+    """从中央索引找到最近活跃 session 的项目路径，索引为空时扫描常见位置"""
+    index = load_session_index()
+    # 优先从索引查找
+    if index:
+        for sid in sorted(index, key=lambda k: index[k].get("started_at", ""), reverse=True):
+            proj = Path(index[sid]["project"])
+            state_file = proj / ".claude" / "harness-state.json"
+            if state_file.exists():
+                return proj
+    # fallback: 扫描常见工作目录下的 harness-state.json
+    scan_roots = []
+    # Windows: C:\work\*  macOS/Linux: ~/work/*, ~/projects/*
+    home = Path.home()
+    if os.name == "nt":
+        scan_roots.append(Path("C:/work"))
+    scan_roots.extend([home / "work", home / "projects", home / "dev"])
+    candidates = []
+    for root in scan_roots:
+        if not root.is_dir():
+            continue
+        for d in root.iterdir():
+            if not d.is_dir():
+                continue
+            sf = d / ".claude" / "harness-state.json"
+            if sf.exists():
+                candidates.append((sf.stat().st_mtime, d))
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+    return None
+
 # ==================== 状态读写 ====================
 
 def load_state():
+    lock = FileLock(str(STATE_FILE) + ".lock", timeout=5)
     try:
-        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        with lock:
+            return json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
         return None
 
 def save_state(state):
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     state["updated_at"] = now_iso()
-    STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    lock = FileLock(str(STATE_FILE) + ".lock", timeout=5)
+    with lock:
+        STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -51,9 +121,9 @@ DEFAULT_PIPELINE = [
     {"name": "prd",       "status": "SKIP"},
     {"name": "plan",      "status": "PENDING"},
     {"name": "implement", "status": "PENDING", "phases": []},
-    {"name": "audit",     "status": "PENDING", "parallel_with": "docs"},
-    {"name": "docs",      "status": "PENDING", "parallel_with": "audit"},
-    {"name": "test",      "status": "PENDING"},
+    {"name": "audit",     "status": "PENDING", "parallel_group": "post-implement"},
+    {"name": "docs",      "status": "PENDING", "parallel_group": "post-implement"},
+    {"name": "test",      "status": "PENDING", "parallel_group": "post-implement"},
     {"name": "review",    "status": "PENDING"},
     {"name": "remember",  "status": "PENDING"},
 ]
@@ -105,6 +175,9 @@ def cmd_init(args):
         },
     }
     save_state(state)
+    # 评测模式下不注册 session（避免临时目录污染索引）
+    if not os.environ.get("DH_EVAL"):
+        register_session(session_id, PROJECT_ROOT)
     print(json.dumps({"action": "init", "task": args.task_name, "route": route, "session_id": session_id}, ensure_ascii=False))
 
 # ==================== 自动续跑检查（Stop Hook 调用） ====================
@@ -172,24 +245,23 @@ def cmd_check_continue(args):
     # IN_PROGRESS 但不是 implement → 不干预（可能还在跑）
 
 def find_next_runnable(pipeline, current_name):
-    """找到下一个可执行的阶段（考虑并行组）"""
+    """找到下一个可执行的阶段组（同 parallel_group 的阶段一起返回）"""
     found_current = False
-    result = []
     for s in pipeline:
         if s["name"] == current_name:
             found_current = True
             continue
-        if found_current and s["status"] in ("PENDING", "WAITING"):
-            result.append(s["name"])
-            # 检查是否有并行伙伴
-            parallel = s.get("parallel_with")
-            if parallel:
-                for ps in pipeline:
-                    if ps["name"] == parallel and ps["status"] in ("PENDING", "WAITING"):
-                        if ps["name"] not in result:
-                            result.append(ps["name"])
-            break  # 只返回下一组
-    return result
+        if not found_current:
+            continue
+        if s["status"] not in ("PENDING", "WAITING"):
+            continue
+        group = s.get("parallel_group")
+        if group:
+            return [ps["name"] for ps in pipeline
+                    if ps.get("parallel_group") == group
+                    and ps["status"] in ("PENDING", "WAITING")]
+        return [s["name"]]
+    return []
 
 # ==================== 状态更新 ====================
 
@@ -235,9 +307,25 @@ def cmd_update(args):
 
     # 更新 current_stage
     if new_status == "DONE":
-        next_stages = find_next_runnable(state["pipeline"], stage_name)
-        if next_stages:
-            state["current_stage"] = next_stages[0]
+        # 检查并行组：组内全部 DONE 才推进
+        group = None
+        for s in state["pipeline"]:
+            if s["name"] == stage_name:
+                group = s.get("parallel_group")
+                break
+        if group:
+            group_stages = [s for s in state["pipeline"] if s.get("parallel_group") == group]
+            all_done = all(s["status"] == "DONE" for s in group_stages)
+            if all_done:
+                last_in_group = group_stages[-1]["name"]
+                next_stages = find_next_runnable(state["pipeline"], last_in_group)
+                if next_stages:
+                    state["current_stage"] = next_stages[0]
+            # 组内未全完成，不推进 current_stage
+        else:
+            next_stages = find_next_runnable(state["pipeline"], stage_name)
+            if next_stages:
+                state["current_stage"] = next_stages[0]
 
     save_state(state)
     log_eval_event(state, "update", f"{stage_name} -> {new_status}")
@@ -246,6 +334,16 @@ def cmd_update(args):
 # ==================== HUD 面板 ====================
 
 def cmd_hud(args):
+    global PROJECT_ROOT, STATE_FILE
+    if getattr(args, 'project', None):
+        PROJECT_ROOT = find_project_root(args.project)
+        STATE_FILE = PROJECT_ROOT / ".claude" / "harness-state.json"
+    elif not STATE_FILE.exists():
+        proj = find_latest_session_project()
+        if proj:
+            PROJECT_ROOT = proj
+            STATE_FILE = PROJECT_ROOT / ".claude" / "harness-state.json"
+
     while True:
         state = load_state()
         if not state:
@@ -731,8 +829,19 @@ refresh();
 
 def cmd_web_hud(args):
     """启动 Web HUD 面板 (默认 localhost:1603)"""
+    global PROJECT_ROOT, STATE_FILE
     from http.server import HTTPServer, BaseHTTPRequestHandler
     import threading
+
+    if args.project:
+        PROJECT_ROOT = find_project_root(args.project)
+        STATE_FILE = PROJECT_ROOT / ".claude" / "harness-state.json"
+    elif not STATE_FILE.exists():
+        # cwd 下没有 state，从中央索引找最近活跃的项目
+        proj = find_latest_session_project()
+        if proj:
+            PROJECT_ROOT = proj
+            STATE_FILE = PROJECT_ROOT / ".claude" / "harness-state.json"
 
     port = args.port or WEB_HUD_PORT
 
@@ -768,6 +877,52 @@ def cmd_web_hud(args):
         server.shutdown()
         print("\nWeb HUD 已停止")
 
+# ==================== Worker 管理 (Layer 2) ====================
+
+WORKERS_DIR = PROJECT_ROOT / ".claude" / "workers"
+
+def cmd_worker_report(args):
+    """Worker 汇报完成状态"""
+    WORKERS_DIR.mkdir(parents=True, exist_ok=True)
+    report = {
+        "worker_id": args.worker_id,
+        "phase": args.phase,
+        "status": args.status.upper(),
+        "worktree_branch": args.branch or "",
+        "completed_at": now_iso(),
+    }
+    report_file = WORKERS_DIR / f"worker-{args.worker_id}.json"
+    report_file.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps(report, ensure_ascii=False))
+
+def cmd_worker_status(args):
+    """Orchestrator 查询所有 Worker 状态"""
+    if not WORKERS_DIR.exists():
+        print(json.dumps({"workers": [], "total": 0, "done": 0, "failed": 0, "all_done": False}, ensure_ascii=False))
+        return
+    workers = []
+    for f in sorted(WORKERS_DIR.glob("worker-*.json")):
+        try:
+            workers.append(json.loads(f.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError):
+            pass
+    all_done = all(w["status"] == "DONE" for w in workers) if workers else False
+    failed = [w for w in workers if w["status"] == "FAILED"]
+    print(json.dumps({
+        "workers": workers,
+        "total": len(workers),
+        "done": sum(1 for w in workers if w["status"] == "DONE"),
+        "failed": len(failed),
+        "all_done": all_done,
+    }, ensure_ascii=False))
+
+def cmd_worker_cleanup(args):
+    """清理 Worker 状态文件"""
+    import shutil
+    if WORKERS_DIR.exists():
+        shutil.rmtree(WORKERS_DIR, ignore_errors=True)
+    print('{"cleaned": true}')
+
 # ==================== CLI 入口 ====================
 
 def main():
@@ -798,6 +953,7 @@ def main():
     p_hud = sub.add_parser("hud")
     p_hud.add_argument("--watch", action="store_true")
     p_hud.add_argument("--rich", action="store_true", help="使用 Rich 库增强版")
+    p_hud.add_argument("--project", default=None, help="指定项目目录")
 
     # eval
     p_eval = sub.add_parser("eval")
@@ -813,6 +969,20 @@ def main():
     # web-hud
     p_web = sub.add_parser("web-hud")
     p_web.add_argument("--port", type=int, default=WEB_HUD_PORT)
+    p_web.add_argument("--project", default=None, help="指定项目目录（默认从 cwd 向上查找 .git）")
+
+    # worker-report
+    p_wr = sub.add_parser("worker-report")
+    p_wr.add_argument("worker_id")
+    p_wr.add_argument("--phase", required=True)
+    p_wr.add_argument("--status", required=True)
+    p_wr.add_argument("--branch", default="")
+
+    # worker-status
+    sub.add_parser("worker-status")
+
+    # worker-cleanup
+    sub.add_parser("worker-cleanup")
 
     # log (write autoloop log entry)
     p_log = sub.add_parser("log")
@@ -842,6 +1012,12 @@ def main():
         cmd_autoloop_log(args)
     elif args.cmd == "web-hud":
         cmd_web_hud(args)
+    elif args.cmd == "worker-report":
+        cmd_worker_report(args)
+    elif args.cmd == "worker-status":
+        cmd_worker_status(args)
+    elif args.cmd == "worker-cleanup":
+        cmd_worker_cleanup(args)
     elif args.cmd == "log":
         autoloop_log(args.stage, args.phase, args.action, args.result, args.detail)
     else:

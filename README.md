@@ -193,8 +193,11 @@ Stops when:
 实时可视化面板，替代 statusline，独立运行在浏览器中：
 
 ```bash
-# 在另一个终端启动
+# 在另一个终端启动（自动发现当前活跃项目）
 python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" web-hud
+
+# 指定项目目录
+python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" web-hud --project /path/to/project
 
 # 自定义端口
 python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" web-hud --port 8080
@@ -205,6 +208,8 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" web-hud --port 8080
 - implement 的 Phase 级进度和门禁结果
 - 错误计数、自动续跑次数、自动修复次数
 - Session ID 标识
+
+> Web HUD 会自动从 session 索引找到当前活跃项目，无论在哪个目录启动。
 
 ### 终端 HUD（备选）
 
@@ -281,15 +286,21 @@ python "${CLAUDE_PLUGIN_ROOT}/eval/eval-runner.py" compare <before> <after>
 
 ### Stop Hook 不生效
 
-1. 确认 `hooks/hooks.json` 存在于插件目录中
+1. 运行 `bash scripts/setup.sh` 部署 wrapper（自动修正 settings.json 路径）
 2. **重启 Claude Code 会话**（Hook 在会话启动时加载）
 3. 验证 Python 可用：`python --version`
 
+### 插件升级后 Stop Hook 路径失效
+
+Claude Code 安装时会将 `${CLAUDE_PLUGIN_ROOT}` 展开为含版本号的绝对路径写入 `settings.json`。升级后版本号变了，旧路径失效。
+
+**解决**：运行 `bash scripts/setup.sh`，自动部署 wrapper 到 `~/.claude/hooks/dev-harness-stop.py`，wrapper 通过 `installed_plugins.json` 动态查找实际路径，后续升级无需再处理。
+
 ### Web HUD 无数据
 
-Web HUD 读取当前工作目录下的 `.claude/harness-state.json`。确保：
-1. 在目标项目目录中启动 web-hud
-2. 已通过 `/dev` 或 `harness.py init` 初始化过状态
+Web HUD 会自动从 session 索引或 `C:\work\*` 目录下发现活跃项目。如果仍无数据：
+1. 确认已通过 `/dev` 或 `harness.py init` 初始化过状态
+2. 手动指定：`python harness.py web-hud --project /path/to/project`
 
 ### 插件更新后行为未变
 

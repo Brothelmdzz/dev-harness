@@ -25,15 +25,16 @@ stages:
 
   - name: audit
     when: "route in [A, B, C]"
-    parallel_with: docs
+    parallel_group: post-implement
     auto_fix: true
 
   - name: docs
     when: "changed_api"
-    parallel_with: audit
+    parallel_group: post-implement
 
   - name: test
     when: "route in [A, B, C]"
+    parallel_group: post-implement
     auto_fix: true
     max_retries: 3
 
