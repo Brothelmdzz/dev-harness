@@ -9,7 +9,7 @@ Dev Harness 是一个 Claude Code 插件，将 Claude Code 变成自驱动开发
 ## 常用命令
 
 ```bash
-# 评测（38 个测试用例，10 维度）
+# 评测（43 个测试用例，12 维度）
 python eval/eval-runner.py run-all
 python eval/eval-runner.py report
 python eval/eval-runner.py compare <before.json> <after.json>
@@ -121,6 +121,14 @@ architect, code-reviewer, planner, executor, debugger, qa-tester, security-revie
 
 **review 三路并行**: 在 generic-review skill 内部完成（code-reviewer + security-reviewer + architect 三个 background Agent），不走 pipeline 层。
 
+### Phases 确定性注册
+
+SKILL.md 指引是"概率性"的（Claude 可能跳过），但 phases 注册是"确定性"的：
+
+1. **PostToolUse hook (`plan-watcher.py`)**: 监听 Write/Edit → 检测 `.claude/plans/*.md` → 自动解析 Phase 标题注册到 state
+2. **Stop hook fallback**: phases 为空时主动从 plan 文件解析，补救 PostToolUse 未触发的情况
+3. **空 phases + 无 plan**: 不干预，放行让 Claude 自行决定
+
 ### 目录结构职责
 
 | 目录 | 职责 |
@@ -128,7 +136,7 @@ architect, code-reviewer, planner, executor, debugger, qa-tester, security-revie
 | `skills/dev/` | `/dev` 入口编排器 SKILL.md |
 | `skills/generic-*/` | L3 内置 Skill（audit/implement/research/review/test/docs/wiki 等） |
 | `scripts/` | Python/Shell 工具脚本（状态管理、Skill 解析、技术栈检测、worktree、Web HUD） |
-| `hooks/` | stop-hook.py（续跑）+ hooks.json（自动注册）+ stop-hook-wrapper.py（版本追踪） |
+| `hooks/` | stop-hook.py（续跑）+ plan-watcher.py（phases 自动注册）+ hooks.json + stop-hook-wrapper.py |
 | `agents/` | 12 个 Agent 的 Markdown 定义文件 |
 | `defaults/` | pipeline.yml（阶段定义）+ skill-map.yml（别名映射） |
 | `templates/` | 项目配置模板（springboot/python/nextjs/monorepo/minimal） |

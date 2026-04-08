@@ -124,6 +124,28 @@ def log_eval(project_root, state, event, detail):
     with open(log_file, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+def parse_phases_from_plan(project_root):
+    """从最新 plan 文件解析 Phase 列表（fallback：phases 为空时自动补救）"""
+    import re
+    plans_dir = project_root / ".claude" / "plans"
+    if not plans_dir.exists():
+        return []
+    plan_files = sorted(plans_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not plan_files:
+        return []
+    text = plan_files[0].read_text(encoding="utf-8")
+    phases = []
+    pattern = r'^#{2,3}\s+(?:Phase|Task|阶段)\s*(\d+)\s*[：:.\-—]?\s*(.*?)$'
+    for m in re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE):
+        num = int(m.group(1))
+        name = m.group(2).strip() or f"Phase {num}"
+        phases.append({
+            "name": f"Phase {num}: {name}" if name != f"Phase {num}" else name,
+            "status": "PENDING",
+            "error_count": 0,
+        })
+    return phases
+
 def count_recent_events(eval_log_path, minutes=5):
     if not eval_log_path.exists():
         return 0
@@ -346,6 +368,14 @@ def main():
     if stop_hook_active:
         if current == "implement" and stage.get("status") == "IN_PROGRESS":
             phases = stage.get("phases", [])
+            # fallback: phases 为空时从 plan 文件解析
+            if not phases:
+                phases = parse_phases_from_plan(project_root)
+                if phases:
+                    stage["phases"] = phases
+                    save_state(state, state_file)
+                    log_eval(project_root, state, "phases_fallback",
+                             f"从 plan 文件解析到 {len(phases)} 个 Phase (stop_hook_active)")
             for p in phases:
                 if p.get("error_count", 0) >= max_retries:
                     sys.exit(0)
@@ -359,6 +389,14 @@ def main():
     # ==================== 首次触发 ====================
     if current == "implement" and stage.get("status") == "IN_PROGRESS":
         phases = stage.get("phases", [])
+        # fallback: phases 为空时从 plan 文件解析
+        if not phases:
+            phases = parse_phases_from_plan(project_root)
+            if phases:
+                stage["phases"] = phases
+                save_state(state, state_file)
+                log_eval(project_root, state, "phases_fallback",
+                         f"从 plan 文件解析到 {len(phases)} 个 Phase (首次触发)")
         for p in phases:
             if p.get("error_count", 0) >= max_retries:
                 sys.exit(0)
@@ -367,6 +405,10 @@ def main():
             reason = f"继续实现下一个 Phase: {pending[0].get('name', '?')}。读取 plan 文件确认该 Phase 内容，然后执行。完成后更新 harness-state.json。"
             output_block(reason, state, project_root)
             return
+        if not phases:
+            # phases 为空且 fallback 也没找到 plan → 无法判断，放行
+            sys.exit(0)
+        # phases 非空且全部完成 → 标记 DONE
         stage["status"] = "DONE"
         stage["completed_at"] = now_iso()
         state["metrics"]["stages_completed"] = state["metrics"].get("stages_completed", 0) + 1

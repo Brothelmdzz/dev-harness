@@ -721,29 +721,43 @@ WEB_HUD_HTML = r"""<!DOCTYPE html>
   body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',Consolas,monospace; font-size:14px; padding:20px; }
   h1 { color:var(--blue); font-size:18px; margin-bottom:4px; }
   .meta { color:var(--dim); font-size:12px; margin-bottom:16px; }
+  .tabs { display:flex; gap:4px; margin-bottom:16px; flex-wrap:wrap; }
+  .tab { padding:6px 16px; border-radius:6px 6px 0 0; cursor:pointer; font-size:12px;
+         background:var(--card); border:1px solid var(--border); border-bottom:none; color:var(--dim); }
+  .tab.active { background:var(--bg); color:var(--blue); border-color:var(--blue); border-bottom:1px solid var(--bg); }
+  .tab .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
+  .dot.running { background:var(--yellow); } .dot.done { background:var(--green); } .dot.idle { background:var(--dim); }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
   .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
   .card h2 { color:var(--blue); font-size:14px; margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:8px; }
+  .progress-bar { display:flex; height:6px; border-radius:3px; overflow:hidden; margin-bottom:16px; background:var(--border); }
+  .progress-bar .seg { height:100%; }
+  .seg.done { background:var(--green); } .seg.active { background:var(--yellow); }
+  .seg.pending { background:var(--border); } .seg.skip { background:transparent; }
   .stage { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border); }
   .stage:last-child { border-bottom:none; }
   .stage .icon { width:24px; text-align:center; font-weight:bold; }
   .stage .name { width:100px; }
   .stage .status { flex:1; }
   .stage .dur { width:60px; text-align:right; color:var(--dim); }
+  .stage .group-tag { font-size:10px; color:var(--purple); margin-left:4px; }
   .stage.current { background:rgba(88,166,255,0.08); border-radius:4px; margin:0 -8px; padding:6px 8px; }
   .DONE { color:var(--green); } .IN_PROGRESS { color:var(--yellow); }
   .SKIP { color:var(--dim); } .PENDING { color:var(--text); }
   .FAILED,.BLOCKED { color:var(--red); }
-  .phase { padding:4px 0 4px 32px; font-size:13px; color:var(--dim); }
+  .phase { padding:4px 0 4px 32px; font-size:13px; color:var(--dim); display:flex; align-items:center; gap:6px; }
   .phase .gate { display:inline-block; margin-left:8px; font-size:11px; }
   .gate.pass { color:var(--green); } .gate.fail { color:var(--red); }
-  .metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }
+  .phase .err { color:var(--red); font-size:11px; }
+  .workers { margin-top:12px; padding-top:12px; border-top:1px solid var(--border); }
+  .workers h3 { font-size:12px; color:var(--purple); margin-bottom:8px; }
+  .worker { display:flex; gap:8px; font-size:12px; padding:3px 0; }
+  .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
   .metric { text-align:center; }
   .metric .val { font-size:24px; font-weight:bold; }
   .metric .label { font-size:11px; color:var(--dim); margin-top:4px; }
-  .log { max-height:300px; overflow-y:auto; font-size:12px; line-height:1.6; }
-  .log .entry { padding:2px 0; }
-  .log .ts { color:var(--dim); }
+  .extra-metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:16px;
+                   padding-top:12px; border-top:1px solid var(--border); font-size:12px; color:var(--dim); text-align:center; }
   .no-data { color:var(--dim); text-align:center; padding:40px; }
   .session-id { color:var(--purple); font-size:12px; }
 </style>
@@ -751,16 +765,45 @@ WEB_HUD_HTML = r"""<!DOCTYPE html>
 <body>
 <h1>Dev Harness HUD</h1>
 <div class="meta">Auto-refresh 2s | <span id="updated"></span></div>
-<div id="app"><div class="no-data">等待 harness 会话启动...</div></div>
+<div class="tabs" id="tabs"></div>
+<div id="app"><div class="no-data">正在搜索活跃项目...</div></div>
 <script>
-async function refresh() {
+let projects = [];
+let activeProject = null;
+
+async function loadProjects() {
   try {
-    const r = await fetch('/api/state');
+    const r = await fetch('/api/projects');
+    if (r.ok) projects = await r.json();
+    if (projects.length && !activeProject) activeProject = projects[0].path;
+    renderTabs();
+  } catch(e) {}
+}
+
+function renderTabs() {
+  if (!projects.length) { document.getElementById('tabs').innerHTML = ''; return; }
+  document.getElementById('tabs').innerHTML = projects.map(p => {
+    const isActive = p.path === activeProject;
+    const stage = p.current_stage || '';
+    const dotClass = stage ? (stage === 'remember' ? 'done' : 'running') : 'idle';
+    return `<div class="tab ${isActive?'active':''}" onclick="switchProject('${p.path.replace(/\\/g,'\\\\')}')">
+      <span class="dot ${dotClass}"></span>${p.name} <span style="color:var(--dim);font-size:10px">${stage}</span>
+    </div>`;
+  }).join('');
+}
+
+function switchProject(path) { activeProject = path; refresh(); renderTabs(); }
+
+async function refresh() {
+  if (!activeProject) { await loadProjects(); return; }
+  try {
+    const r = await fetch('/api/state?project=' + encodeURIComponent(activeProject));
     if (!r.ok) { document.getElementById('app').innerHTML = '<div class="no-data">等待 harness 会话启动...</div>'; return; }
     const s = await r.json();
     render(s);
   } catch(e) {}
 }
+
 function render(s) {
   const task = s.task || {};
   const metrics = s.metrics || {};
@@ -768,32 +811,43 @@ function render(s) {
   const current = s.current_stage || '';
   document.getElementById('updated').textContent = (s.updated_at||'').replace('T',' ').replace('Z','');
 
+  // 进度条
+  const active = pipeline.filter(x=>x.status!=='SKIP');
+  let barHtml = active.map(st => {
+    const cls = st.status==='DONE'?'done':st.status==='IN_PROGRESS'?'active':'pending';
+    return `<div class="seg ${cls}" style="flex:1" title="${st.name}: ${st.status}"></div>`;
+  }).join('');
+
   let stagesHtml = '';
   for (const st of pipeline) {
     const isCur = st.name === current;
     const icon = st.status==='DONE'?'✓':st.status==='IN_PROGRESS'?'▶':st.status==='SKIP'?'—':st.status==='FAILED'?'✗':'○';
     const dur = calcDur(st);
+    const group = st.parallel_group ? `<span class="group-tag">⫘ ${st.parallel_group}</span>` : '';
     stagesHtml += `<div class="stage ${isCur?'current':''}">
       <span class="icon ${st.status}">${icon}</span>
-      <span class="name">${st.name}</span>
+      <span class="name">${st.name}${group}</span>
       <span class="status ${st.status}">${st.status}</span>
       <span class="dur">${dur}</span>
     </div>`;
-    if (st.name==='implement' && st.phases) {
+    if (st.name==='implement' && st.phases && st.phases.length) {
       for (const p of st.phases) {
         const pi = p.status==='DONE'?'✓':p.status==='IN_PROGRESS'?'▶':'○';
         let gs = '';
         if (p.gates) for (const [k,v] of Object.entries(p.gates))
           gs += `<span class="gate ${v?'pass':'fail'}">${k}:${v?'✓':'✗'}</span>`;
-        stagesHtml += `<div class="phase"><span class="${p.status}">${pi}</span> ${p.name||'Phase'} ${gs}</div>`;
+        const err = p.error_count ? `<span class="err">⚠${p.error_count}</span>` : '';
+        stagesHtml += `<div class="phase"><span class="${p.status}">${pi}</span> ${p.name||'Phase'} ${gs} ${err}</div>`;
       }
     }
   }
 
   const done = pipeline.filter(x=>x.status==='DONE').length;
   const total = pipeline.filter(x=>x.status!=='SKIP').length;
+  const pct = total ? Math.round(done/total*100) : 0;
 
   document.getElementById('app').innerHTML = `
+    <div class="progress-bar">${barHtml}</div>
     <div class="grid">
       <div class="card">
         <h2>任务: ${task.name||'?'} <span class="session-id">${s.session_id?'#'+s.session_id:''}</span></h2>
@@ -805,56 +859,56 @@ function render(s) {
       <div class="card">
         <h2>指标</h2>
         <div class="metrics">
-          <div class="metric"><div class="val" style="color:var(--blue)">${done}/${total}</div><div class="label">进度</div></div>
+          <div class="metric"><div class="val" style="color:var(--blue)">${pct}%</div><div class="label">进度 (${done}/${total})</div></div>
           <div class="metric"><div class="val" style="color:var(--yellow)">${metrics.auto_continues||0}</div><div class="label">自动续跑</div></div>
-          <div class="metric"><div class="val" style="color:var(--red)">${metrics.total_errors||0}</div><div class="label">错误</div></div>
-          <div class="metric"><div class="val" style="color:var(--green)">${metrics.auto_fixed||0}</div><div class="label">自动修复</div></div>
+          <div class="metric"><div class="val" style="color:${(metrics.total_errors||0)>0?'var(--red)':'var(--green)'}">${metrics.total_errors||0}</div><div class="label">错误</div></div>
         </div>
-        <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border);font-size:12px;color:var(--dim)">
-          阻断: ${metrics.blocking||0} | 重试上限: ${metrics.max_retries||3} | 已完成阶段: ${metrics.stages_completed||0}
+        <div class="extra-metrics">
+          <div>自动修复: ${metrics.auto_fixed||0}</div>
+          <div>阻断: ${metrics.blocking||0}</div>
+          <div>重试上限: ${metrics.max_retries||3}</div>
+          <div>已完成: ${metrics.stages_completed||0}</div>
         </div>
       </div>
     </div>`;
 }
 function calcDur(st) {
-  if (!st.started_at || !st.completed_at) return '';
-  const d = (new Date(st.completed_at) - new Date(st.started_at)) / 1000;
-  return d > 60 ? Math.floor(d/60)+'m'+('0'+Math.floor(d%60)).slice(-2)+'s' : Math.floor(d)+'s';
+  if (!st.started_at) return '';
+  const end = st.completed_at ? new Date(st.completed_at) : new Date();
+  const d = (end - new Date(st.started_at)) / 1000;
+  if (d < 0) return '';
+  return d > 3600 ? Math.floor(d/3600)+'h'+('0'+Math.floor(d%3600/60)).slice(-2)+'m'
+       : d > 60 ? Math.floor(d/60)+'m'+('0'+Math.floor(d%60)).slice(-2)+'s'
+       : Math.floor(d)+'s';
 }
+loadProjects();
 setInterval(refresh, 2000);
-refresh();
+setInterval(loadProjects, 10000);
 </script>
 </body>
 </html>"""
 
 def cmd_web_hud(args):
-    """启动 Web HUD 面板 (默认 localhost:1603)"""
-    global PROJECT_ROOT, STATE_FILE
+    """启动多项目 Web HUD 面板"""
     from http.server import HTTPServer, BaseHTTPRequestHandler
-    import threading
-
-    if args.project:
-        PROJECT_ROOT = find_project_root(args.project)
-        STATE_FILE = PROJECT_ROOT / ".claude" / "harness-state.json"
-    elif not STATE_FILE.exists():
-        # cwd 下没有 state，从中央索引找最近活跃的项目
-        proj = find_latest_session_project()
-        if proj:
-            PROJECT_ROOT = proj
-            STATE_FILE = PROJECT_ROOT / ".claude" / "harness-state.json"
+    import urllib.parse
 
     port = args.port or WEB_HUD_PORT
 
     class HUDHandler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path == '/api/state':
-                state = load_state()
+            parsed = urllib.parse.urlparse(self.path)
+
+            if parsed.path == '/api/projects':
+                projects = self._find_all_projects()
+                self._json_response(projects)
+
+            elif parsed.path == '/api/state':
+                params = urllib.parse.parse_qs(parsed.query)
+                proj_path = params.get("project", [None])[0]
+                state = self._load_project_state(proj_path)
                 if state:
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'application/json')
-                    self.send_header('Access-Control-Allow-Origin', '*')
-                    self.end_headers()
-                    self.wfile.write(json.dumps(state, ensure_ascii=False).encode('utf-8'))
+                    self._json_response(state)
                 else:
                     self.send_response(404)
                     self.end_headers()
@@ -864,13 +918,72 @@ def cmd_web_hud(args):
                 self.end_headers()
                 self.wfile.write(WEB_HUD_HTML.encode('utf-8'))
 
+        def _find_all_projects(self):
+            projects = []
+            seen = set()
+            index = load_session_index()
+            for sid in sorted(index, key=lambda k: index[k].get("started_at", ""), reverse=True):
+                proj = index[sid]["project"]
+                if proj in seen:
+                    continue
+                sf = Path(proj) / ".claude" / "harness-state.json"
+                if sf.exists():
+                    try:
+                        state = json.loads(sf.read_text(encoding="utf-8"))
+                        projects.append({
+                            "path": proj,
+                            "name": state.get("project", Path(proj).name),
+                            "task": state.get("task", {}).get("name", ""),
+                            "current_stage": state.get("current_stage", ""),
+                            "session_id": state.get("session_id", ""),
+                        })
+                        seen.add(proj)
+                    except Exception:
+                        pass
+            # fallback 扫描
+            if not projects:
+                proj = find_latest_session_project()
+                if proj:
+                    sf = proj / ".claude" / "harness-state.json"
+                    if sf.exists():
+                        try:
+                            state = json.loads(sf.read_text(encoding="utf-8"))
+                            projects.append({
+                                "path": str(proj),
+                                "name": state.get("project", proj.name),
+                                "task": state.get("task", {}).get("name", ""),
+                                "current_stage": state.get("current_stage", ""),
+                                "session_id": state.get("session_id", ""),
+                            })
+                        except Exception:
+                            pass
+            return projects
+
+        def _load_project_state(self, proj_path):
+            if proj_path:
+                sf = Path(proj_path) / ".claude" / "harness-state.json"
+            else:
+                sf = STATE_FILE
+            try:
+                lock = FileLock(str(sf) + ".lock", timeout=2)
+                with lock:
+                    return json.loads(sf.read_text(encoding="utf-8"))
+            except Exception:
+                return None
+
+        def _json_response(self, data):
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
+
         def log_message(self, format, *a):
-            pass  # 静默日志
+            pass
 
     server = HTTPServer(('0.0.0.0', port), HUDHandler)
     print(f"Dev Harness Web HUD: http://localhost:{port}")
-    print(f"监控项目: {PROJECT_ROOT}")
-    print("Ctrl+C 停止")
+    print("多项目模式 | Ctrl+C 停止")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

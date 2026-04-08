@@ -59,6 +59,14 @@ METRICS = {
         "description": "Worker 状态文件创建/汇总/清理",
         "weight": 1.0,
     },
+    "plan_watcher": {
+        "description": "PostToolUse plan 文件写入时自动注册 phases",
+        "weight": 1.5,
+    },
+    "phases_fallback": {
+        "description": "Stop hook phases 为空时的 plan 文件 fallback 解析",
+        "weight": 2.0,
+    },
 }
 
 HOOK_SCRIPT = Path(__file__).parent.parent / "hooks" / "stop-hook.py"
@@ -69,6 +77,15 @@ def run_cmd(cmd, cwd=None):
     """执行命令并返回 stdout"""
     env = {**os.environ, "DH_EVAL": "1"}
     result = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=cwd, env=env)
+    return result.stdout.strip(), result.returncode
+
+def run_script_with_stdin(script, stdin_data, cwd=None):
+    """通过 stdin 传入数据运行 Python 脚本"""
+    env = {**os.environ, "DH_EVAL": "1"}
+    result = subprocess.run(
+        f"python {script}", shell=True, capture_output=True, text=True,
+        cwd=cwd, env=env, input=stdin_data
+    )
     return result.stdout.strip(), result.returncode
 
 def assert_eq(actual, expected, msg=""):
@@ -697,6 +714,121 @@ def test_worker_management():
 
 # ==================== 评测执行器 ====================
 
+# ==================== 新增: plan-watcher 测试 ====================
+
+def test_plan_watcher():
+    """测试 PostToolUse plan-watcher 自动注册 phases"""
+    import shutil
+    results = []
+    watcher_script = str(Path(__file__).parent.parent / "hooks" / "plan-watcher.py")
+
+    # 测试 1: 写入 plan 文件后 phases 自动注册
+    tmpdir = _make_test_env()
+    run_cmd(f"python {HARNESS_SCRIPT} init watcher-test --route C", cwd=tmpdir)
+    plan_dir = os.path.join(tmpdir, ".claude", "plans")
+    os.makedirs(plan_dir, exist_ok=True)
+    plan_file = os.path.join(plan_dir, "test-plan.md")
+    with open(plan_file, "w", encoding="utf-8") as f:
+        f.write("# Plan\n## Phase 1：搭建\nxxx\n## Phase 2：核心\nyyy\n## Phase 3：测试\nzzz\n")
+    hook_input = json.dumps({"tool_name": "Write", "tool_input": {"file_path": plan_file}})
+    run_script_with_stdin(watcher_script, hook_input, cwd=tmpdir)
+    state = _read_state(tmpdir)
+    impl = next(s for s in state["pipeline"] if s["name"] == "implement")
+    results.append({
+        "test": "plan_watcher_registers_phases",
+        "pass": len(impl.get("phases", [])) == 3,
+        "detail": f"phases={len(impl.get('phases', []))}"
+    })
+
+    # 测试 2: 非 plan 文件不触发
+    impl["phases"] = []
+    _write_state(tmpdir, state)
+    hook_input2 = json.dumps({"tool_name": "Write", "tool_input": {"file_path": os.path.join(tmpdir, "README.md")}})
+    run_script_with_stdin(watcher_script, hook_input2, cwd=tmpdir)
+    state2 = _read_state(tmpdir)
+    impl2 = next(s for s in state2["pipeline"] if s["name"] == "implement")
+    results.append({
+        "test": "plan_watcher_ignores_non_plan",
+        "pass": len(impl2.get("phases", [])) == 0,
+        "detail": f"phases={len(impl2.get('phases', []))}"
+    })
+
+    # 测试 3: 不覆盖已有进度
+    impl2["phases"] = [{"name": "Phase 1: old", "status": "DONE", "error_count": 0}]
+    _write_state(tmpdir, state2)
+    hook_input3 = json.dumps({"tool_name": "Write", "tool_input": {"file_path": plan_file}})
+    run_script_with_stdin(watcher_script, hook_input3, cwd=tmpdir)
+    state3 = _read_state(tmpdir)
+    impl3 = next(s for s in state3["pipeline"] if s["name"] == "implement")
+    phase1 = impl3["phases"][0] if impl3.get("phases") else {}
+    results.append({
+        "test": "plan_watcher_preserves_progress",
+        "pass": len(impl3.get("phases", [])) == 3 and phase1.get("status") == "DONE",
+        "detail": f"phases={len(impl3.get('phases', []))}, p1.status={phase1.get('status')}"
+    })
+
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    return {"metric": "plan_watcher", "results": results}
+
+# ==================== 新增: phases fallback 测试 ====================
+
+def test_phases_fallback():
+    """测试 stop-hook phases 为空时的 plan 文件 fallback"""
+    import shutil
+    results = []
+
+    # 测试 1: implement IN_PROGRESS + phases=[] + 有 plan 文件 → fallback 解析并 block
+    from datetime import datetime, timezone
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    tmpdir = _make_test_env()
+    state = {
+        "version": "1.1", "session_id": "fb-test",
+        "project": "test", "task": {"name": "test", "route": "C", "started_at": now_str},
+        "pipeline": [
+            {"name": "plan", "status": "DONE"},
+            {"name": "implement", "status": "IN_PROGRESS", "phases": [], "started_at": now_str},
+            {"name": "audit", "status": "PENDING", "parallel_group": "post-implement"},
+            {"name": "docs", "status": "PENDING", "parallel_group": "post-implement"},
+            {"name": "test", "status": "PENDING", "parallel_group": "post-implement"},
+            {"name": "review", "status": "PENDING"},
+            {"name": "remember", "status": "PENDING"},
+        ],
+        "current_stage": "implement",
+        "paused": False,
+        "metrics": {"max_retries": 3, "auto_continues": 0, "stages_completed": 0},
+    }
+    _write_state(tmpdir, state)
+    plan_dir = os.path.join(tmpdir, ".claude", "plans")
+    os.makedirs(plan_dir, exist_ok=True)
+    with open(os.path.join(plan_dir, "test.md"), "w", encoding="utf-8") as f:
+        f.write("# Plan\n## Phase 1：搭建\nxxx\n## Phase 2：核心\nyyy\n")
+    out, rc = _run_hook(tmpdir, {"session_id": "fb-test"})
+    new_state = _read_state(tmpdir)
+    impl = next(s for s in new_state["pipeline"] if s["name"] == "implement")
+    results.append({
+        "test": "fallback_parses_plan",
+        "pass": len(impl.get("phases", [])) == 2 and "block" in out,
+        "detail": f"phases={len(impl.get('phases', []))}, has_block={'block' in out}"
+    })
+
+    # 测试 2: implement IN_PROGRESS + phases=[] + 无 plan 文件 → 不 block（无法判断，放行）
+    tmpdir2 = _make_test_env()
+    state2 = dict(state)
+    state2["pipeline"] = [dict(s) for s in state["pipeline"]]
+    state2["pipeline"][1] = dict(state["pipeline"][1])
+    state2["pipeline"][1]["phases"] = []
+    _write_state(tmpdir2, state2)
+    out2, rc2 = _run_hook(tmpdir2, {"session_id": "fb-test"})
+    results.append({
+        "test": "no_plan_no_block",
+        "pass": "block" not in out2,
+        "detail": f"output='{out2[:60]}'"
+    })
+
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    shutil.rmtree(tmpdir2, ignore_errors=True)
+    return {"metric": "phases_fallback", "results": results}
+
 ALL_TESTS = {
     "skill_resolution": test_skill_resolution,
     "state_management": test_state_management,
@@ -708,6 +840,8 @@ ALL_TESTS = {
     "skill_override": test_skill_override,
     "parallel_group": test_parallel_group,
     "worker_management": test_worker_management,
+    "plan_watcher": test_plan_watcher,
+    "phases_fallback": test_phases_fallback,
 }
 
 def run_scenario(name):
