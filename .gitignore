@@ -24,6 +24,7 @@ docs/
 __pycache__/
 *.pyc
 *.pyo
+.venv/
 
 # filelock
 *.lock

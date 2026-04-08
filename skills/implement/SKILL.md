@@ -35,11 +35,11 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-stack.sh"
 
 ```bash
 # 门禁通过
-python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update implement IN_PROGRESS \
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update implement IN_PROGRESS \
   --phase {N} --gate build=pass --gate test=pass
 
 # 门禁失败
-python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update implement IN_PROGRESS \
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update implement IN_PROGRESS \
   --phase {N} --error --auto-fixed
 ```
 

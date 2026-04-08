@@ -64,7 +64,7 @@ COMMIT → 提交这个最小可工作单元
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-stack.sh"
 
 # 更新 harness 状态
-python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update implement IN_PROGRESS \
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update implement IN_PROGRESS \
   --phase {N} --gate build=pass --gate test=pass
 ```
 

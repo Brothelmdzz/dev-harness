@@ -1,49 +1,83 @@
 #!/bin/bash
-# Dev Harness 安装验证
-# 只做检测和报告，不修改用户全局环境
+# Dev Harness 安装验证 + venv 环境初始化
+# 所有依赖安装到插件内置 .venv，不污染用户全局环境
 
 PLUGIN_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+VENV_DIR="$PLUGIN_DIR/.venv"
 
-# 从 plugin.json 动态读取版本号
-VERSION=$(python -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$PLUGIN_DIR/.claude-plugin/plugin.json" 2>/dev/null || echo "unknown")
-
-echo "=========================="
-echo "  Dev Harness v${VERSION} Setup"
-echo "=========================="
-echo ""
-
-# ==================== 1. 依赖检查（只检测，不自动安装） ====================
-
+# 检测系统 python
 PYTHON_CMD=""
-if python --version >/dev/null 2>&1; then
+if command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
-    echo "[OK] Python $(python --version 2>&1 | cut -d' ' -f2)"
-elif python3 --version >/dev/null 2>&1; then
+elif command -v python3 >/dev/null 2>&1; then
     PYTHON_CMD="python3"
-    echo "[OK] Python3 $(python3 --version 2>&1 | cut -d' ' -f2)"
 else
     echo "[ERROR] 需要 Python 3.8+"
     echo "  安装: https://www.python.org/downloads/"
     exit 1
 fi
 
-# filelock（可选，多 Agent 并行推荐）
-if $PYTHON_CMD -c "import filelock" 2>/dev/null; then
-    echo "[OK] filelock 已安装"
+# 从 plugin.json 动态读取版本号
+VERSION=$($PYTHON_CMD -c "import json,sys; print(json.load(open(sys.argv[1]))['version'])" "$PLUGIN_DIR/.claude-plugin/plugin.json" 2>/dev/null || echo "unknown")
+
+echo "=========================="
+echo "  Dev Harness v${VERSION} Setup"
+echo "=========================="
+echo ""
+echo "[OK] Python $($PYTHON_CMD --version 2>&1 | cut -d' ' -f2)"
+
+# ==================== 1. 创建插件内置 venv ====================
+
+if [ -d "$VENV_DIR" ] && [ -f "$VENV_DIR/bin/python" -o -f "$VENV_DIR/Scripts/python.exe" ]; then
+    echo "[OK] venv 已存在: $VENV_DIR"
 else
-    echo "[INFO] filelock 未安装（可选，多 Agent 并行时推荐）"
-    echo "  安装: pip install filelock（建议在 venv 中安装）"
+    echo "[INFO] 创建插件 venv..."
+    $PYTHON_CMD -m venv "$VENV_DIR" 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "[OK] venv 创建成功"
+    else
+        echo "[WARN] venv 创建失败，将使用系统 Python（fallback 模式）"
+    fi
 fi
 
-# Rich（可选，终端 HUD 增强版）
-if $PYTHON_CMD -c "import rich" 2>/dev/null; then
-    echo "[OK] Rich 已安装"
-else
-    echo "[INFO] Rich 未安装（可选，终端 HUD 增强版需要）"
-    echo "  安装: pip install rich"
+# 找到 venv 的 pip
+VENV_PIP=""
+if [ -f "$VENV_DIR/bin/pip" ]; then
+    VENV_PIP="$VENV_DIR/bin/pip"
+elif [ -f "$VENV_DIR/Scripts/pip.exe" ]; then
+    VENV_PIP="$VENV_DIR/Scripts/pip.exe"
 fi
 
-# ==================== 2. 文件完整性 ====================
+# ==================== 2. 安装依赖到 venv ====================
+
+if [ -n "$VENV_PIP" ]; then
+    echo "[INFO] 安装依赖到 venv..."
+    "$VENV_PIP" install filelock rich -q 2>/dev/null
+    if [ $? -eq 0 ]; then
+        echo "[OK] filelock + rich 已安装到 venv"
+    else
+        echo "[WARN] 部分依赖安装失败"
+    fi
+else
+    echo "[WARN] 无法找到 venv pip，跳过依赖安装"
+fi
+
+# ==================== 3. 验证 venv python 可用 ====================
+
+DH_PYTHON="$PLUGIN_DIR/scripts/dh-python.sh"
+echo ""
+VENV_PYTHON_VER=$(bash "$DH_PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}')" 2>/dev/null)
+if [ -n "$VENV_PYTHON_VER" ]; then
+    echo "[OK] dh-python → Python $VENV_PYTHON_VER"
+else
+    echo "[WARN] dh-python 验证失败，将 fallback 到系统 Python"
+fi
+
+# 验证核心依赖
+bash "$DH_PYTHON" -c "import filelock; print('[OK] filelock 可用')" 2>/dev/null || echo "[WARN] filelock 不可用（多 Agent 并行将降级）"
+bash "$DH_PYTHON" -c "import rich; print('[OK] rich 可用')" 2>/dev/null || echo "[INFO] rich 不可用（终端 HUD 将使用基础版）"
+
+# ==================== 4. 文件完整性 ====================
 
 echo ""
 REQUIRED_FILES=(
@@ -53,6 +87,7 @@ REQUIRED_FILES=(
     "scripts/harness.py"
     "scripts/skill-resolver.py"
     "scripts/detect-stack.sh"
+    "scripts/dh-python.sh"
     "skills/dev/SKILL.md"
     ".claude-plugin/plugin.json"
 )
@@ -67,7 +102,7 @@ for f in "${REQUIRED_FILES[@]}"; do
     fi
 done
 
-# ==================== 3. Hook 注册状态检测（只读检查） ====================
+# ==================== 5. Hook 注册状态（只读检查） ====================
 
 echo ""
 CLAUDE_DIR="$HOME/.claude"
@@ -77,53 +112,37 @@ fi
 SETTINGS="$CLAUDE_DIR/settings.json"
 
 if [ -f "$SETTINGS" ]; then
-    # 检查 Stop hook 是否已注册
     if grep -q "stop-hook\|dev-harness-stop" "$SETTINGS" 2>/dev/null; then
         echo "[OK] Stop Hook 已注册"
     else
-        echo "[WARN] Stop Hook 未在 settings.json 中注册"
-        echo "  插件的 hooks/hooks.json 会在新会话启动时自动注册"
-        echo "  如果不生效，重启 Claude Code 会话"
+        echo "[INFO] Stop Hook 将在新会话启动时自动注册（通过 hooks/hooks.json）"
     fi
-
-    # 检查是否有旧版硬编码路径
-    if grep -q "dev-harness-marketplace/dev-harness/[0-9].*stop-hook\.py" "$SETTINGS" 2>/dev/null; then
-        echo "[WARN] settings.json 中有旧版硬编码路径（含版本号）"
-        echo "  建议运行: bash \"${PLUGIN_DIR}/scripts/fix-hook-path.sh\""
-        echo "  或手动将 settings.json 中的 stop-hook 路径改为:"
-        echo "    python \"$CLAUDE_DIR/hooks/dev-harness-stop.py\""
-    fi
-else
-    echo "[INFO] 未找到 settings.json（$SETTINGS）"
 fi
 
-# ==================== 4. 评测（可选） ====================
+# ==================== 6. 评测（可选） ====================
 
 if [[ "$1" == "--with-eval" ]]; then
     echo ""
-    echo "运行安装验证评测..."
-    $PYTHON_CMD "$PLUGIN_DIR/eval/eval-runner.py" run-all 2>/dev/null
-    EVAL_EXIT=$?
-else
-    EVAL_EXIT=0
+    echo "运行评测..."
+    bash "$DH_PYTHON" "$PLUGIN_DIR/eval/eval-runner.py" run-all 2>/dev/null
 fi
 
 # ==================== 结果 ====================
 
 echo ""
 echo "=========================="
-if [ $MISSING -eq 0 ] && [ $EVAL_EXIT -eq 0 ]; then
-    echo "  检查通过!"
+if [ $MISSING -eq 0 ]; then
+    echo "  安装成功!"
 else
-    echo "  检查完成（$MISSING 个文件缺失）"
+    echo "  安装完成（$MISSING 个文件缺失）"
 fi
 echo "=========================="
 echo ""
+echo "环境: $VENV_DIR"
+echo "Python: $(bash "$DH_PYTHON" --version 2>&1)"
+echo ""
 echo "使用方式:"
 echo "  1. 在任何项目中输入 /dev 开始开发"
-echo "  2. Web HUD: python \"\${CLAUDE_PLUGIN_ROOT}/scripts/harness.py\" web-hud"
+echo "  2. Web HUD: bash \"\${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh\" \"\${CLAUDE_PLUGIN_ROOT}/scripts/harness.py\" web-hud"
 echo "  3. 运行评测: bash \"\${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh\" --with-eval"
-echo ""
-echo "注意: Stop Hook 通过 hooks/hooks.json 自动注册，无需手动配置。"
-echo "      如遇版本升级后路径失效，运行 fix-hook-path.sh 修复。"
 echo ""

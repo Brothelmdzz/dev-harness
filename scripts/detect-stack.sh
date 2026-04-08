@@ -58,7 +58,8 @@ detect() {
         lint=""
     fi
 
-    python -c "
+    SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+    bash "$SCRIPT_DIR/dh-python.sh" -c "
 import json, sys
 print(json.dumps({'stack': sys.argv[1], 'build': sys.argv[2], 'test': sys.argv[3], 'lint': sys.argv[4]}, ensure_ascii=False))
 " "$stack" "$build" "$test" "$lint"

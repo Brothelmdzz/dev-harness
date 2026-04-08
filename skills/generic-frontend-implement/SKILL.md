@@ -61,7 +61,7 @@ except: print('unknown')
 ### 第五步: 更新状态并继续
 
 ```bash
-python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update implement IN_PROGRESS \
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update implement IN_PROGRESS \
   --phase {N} --gate build=pass --gate test=pass
 ```
 
