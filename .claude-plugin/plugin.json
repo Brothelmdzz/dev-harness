@@ -1,6 +1,6 @@
 {
   "name": "dev-harness",
-  "version": "3.1.0",
+  "version": "3.2.1",
   "description": "Harness Engineering development pipeline for Claude Code. Three-layer skill resolution, auto-loop iteration, visual HUD, and 12 specialized agents.",
   "author": { "name": "brothelmdzz" },
   "license": "MIT",
