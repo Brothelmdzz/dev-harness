@@ -1,4 +1,34 @@
+# 运行时产物（用户项目内的 .claude/ 子目录）
+.claude/plans/
+.claude/harness-state.json
+.claude/harness-state.json.lock
+.claude/harness-eval.jsonl
+.claude/workers/
+.claude/reports/
+.claude/researches/
+.claude/project-design/
+.claude/dev-config.yml
+.claude/worktrees/
+
+# 评测结果（本地生成，不上传）
 eval/results/
-.orphaned_at
+eval/traces/
+eval/pareto-frontier.json
+eval/trace-schema.json
+eval/judge-prompt.md
+
+# docs（本地研究文档，不上传）
+docs/
+
+# Python
 __pycache__/
 *.pyc
+*.pyo
+
+# filelock
+*.lock
+
+# 系统文件
+.orphaned_at
+.DS_Store
+Thumbs.db
