@@ -96,10 +96,12 @@ def find_latest_session_project():
 
 # ==================== 状态读写 ====================
 
+def _state_lock():
+    return FileLock(str(STATE_FILE) + ".lock", timeout=10)
+
 def load_state():
-    lock = FileLock(str(STATE_FILE) + ".lock", timeout=5)
     try:
-        with lock:
+        with _state_lock():
             return json.loads(STATE_FILE.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
         return None
@@ -107,9 +109,21 @@ def load_state():
 def save_state(state):
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     state["updated_at"] = now_iso()
-    lock = FileLock(str(STATE_FILE) + ".lock", timeout=5)
-    with lock:
+    with _state_lock():
         STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def load_and_update_state(updater_fn):
+    """原子化 read-modify-write：在同一把锁内读取、修改、保存状态"""
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with _state_lock():
+        try:
+            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+        result = updater_fn(state)
+        state["updated_at"] = now_iso()
+        STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        return result
 
 def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -175,6 +189,11 @@ def cmd_init(args):
         },
     }
     save_state(state)
+
+    # 预创建标准目录结构（防止 Claude 自行创建不一致的目录名）
+    for d in ["researches", "plans", "reports", "project-design"]:
+        (PROJECT_ROOT / ".claude" / d).mkdir(parents=True, exist_ok=True)
+
     # 评测模式下不注册 session（避免临时目录污染索引）
     if not os.environ.get("DH_EVAL"):
         register_session(session_id, PROJECT_ROOT)
@@ -223,14 +242,12 @@ def cmd_check_continue(args):
         if not next_stages:
             return  # 全部完成
 
-        # 更新 current_stage
+        # 更新 current_stage（单次 save）
         state["current_stage"] = next_stages[0]
         for ns in next_stages:
             for s in pipeline:
                 if s["name"] == ns:
                     s["status"] = "PENDING"
-        save_state(state)
-
         state["metrics"]["auto_continues"] += 1
         save_state(state)
 
@@ -266,69 +283,73 @@ def find_next_runnable(pipeline, current_name):
 # ==================== 状态更新 ====================
 
 def cmd_update(args):
-    state = load_state()
-    if not state:
-        print("ERROR: 无 harness 状态", file=sys.stderr)
-        sys.exit(1)
-
+    """原子化状态更新：read-modify-write 在同一把锁内完成（修复 C1+C2）"""
     stage_name = args.stage
     new_status = args.status.upper()
 
-    for s in state["pipeline"]:
-        if s["name"] == stage_name:
-            s["status"] = new_status
-            if new_status == "DONE":
-                s["completed_at"] = now_iso()
-                state["metrics"]["stages_completed"] += 1
-            elif new_status == "IN_PROGRESS":
-                s["started_at"] = now_iso()
-
-            # Phase 级更新
-            if args.phase is not None and "phases" in s:
-                idx = args.phase - 1
-                if 0 <= idx < len(s["phases"]):
-                    p = s["phases"][idx]
-                    if args.gate:
-                        for g in args.gate:
-                            k, v = g.split("=")
-                            if "gates" not in p:
-                                p["gates"] = {}
-                            p["gates"][k] = v == "pass"
-
-            # 错误计数
-            if args.error:
-                state["metrics"]["total_errors"] += 1
-                if args.auto_fixed:
-                    state["metrics"]["auto_fixed"] += 1
-                else:
-                    state["metrics"]["blocking"] += 1
-
-            break
-
-    # 更新 current_stage
-    if new_status == "DONE":
-        # 检查并行组：组内全部 DONE 才推进
-        group = None
+    def updater(state):
         for s in state["pipeline"]:
             if s["name"] == stage_name:
-                group = s.get("parallel_group")
-                break
-        if group:
-            group_stages = [s for s in state["pipeline"] if s.get("parallel_group") == group]
-            all_done = all(s["status"] == "DONE" for s in group_stages)
-            if all_done:
-                last_in_group = group_stages[-1]["name"]
-                next_stages = find_next_runnable(state["pipeline"], last_in_group)
-                if next_stages:
-                    state["current_stage"] = next_stages[0]
-            # 组内未全完成，不推进 current_stage
-        else:
-            next_stages = find_next_runnable(state["pipeline"], stage_name)
-            if next_stages:
-                state["current_stage"] = next_stages[0]
+                s["status"] = new_status
+                if new_status == "DONE":
+                    s["completed_at"] = now_iso()
+                    state["metrics"]["stages_completed"] += 1
+                elif new_status == "IN_PROGRESS":
+                    s["started_at"] = now_iso()
 
-    save_state(state)
-    log_eval_event(state, "update", f"{stage_name} -> {new_status}")
+                # Phase 级更新
+                if args.phase is not None and "phases" in s:
+                    idx = args.phase - 1
+                    if 0 <= idx < len(s["phases"]):
+                        p = s["phases"][idx]
+                        if args.gate:
+                            for g in args.gate:
+                                parts = g.split("=", 1)
+                                if len(parts) == 2:
+                                    if "gates" not in p:
+                                        p["gates"] = {}
+                                    p["gates"][parts[0]] = parts[1] == "pass"
+
+                # 错误计数
+                if args.error:
+                    state["metrics"]["total_errors"] += 1
+                    if args.auto_fixed:
+                        state["metrics"]["auto_fixed"] += 1
+                    else:
+                        state["metrics"]["blocking"] += 1
+                break
+
+        # C1: FAILED 状态处理 — 标记并行组内其他 PENDING 为 BLOCKED
+        if new_status == "FAILED":
+            group = next((s.get("parallel_group") for s in state["pipeline"] if s["name"] == stage_name), None)
+            if group:
+                for s in state["pipeline"]:
+                    if s.get("parallel_group") == group and s["status"] == "PENDING":
+                        s["status"] = "BLOCKED"
+
+        # C2: 并行组推进逻辑（在锁内原子执行）
+        if new_status == "DONE":
+            group = next((s.get("parallel_group") for s in state["pipeline"] if s["name"] == stage_name), None)
+            if group:
+                group_stages = [s for s in state["pipeline"] if s.get("parallel_group") == group]
+                if all(s["status"] == "DONE" for s in group_stages):
+                    last_in_group = group_stages[-1]["name"]
+                    nxt = find_next_runnable(state["pipeline"], last_in_group)
+                    if nxt:
+                        state["current_stage"] = nxt[0]
+            else:
+                nxt = find_next_runnable(state["pipeline"], stage_name)
+                if nxt:
+                    state["current_stage"] = nxt[0]
+
+    result = load_and_update_state(updater)
+    if result is None:
+        print("ERROR: 无 harness 状态", file=sys.stderr)
+        sys.exit(1)
+    # log 在锁外执行（不影响原子性）
+    state = load_state()
+    if state:
+        log_eval_event(state, "update", f"{stage_name} -> {new_status}")
     print(json.dumps({"stage": stage_name, "status": new_status}, ensure_ascii=False))
 
 # ==================== HUD 面板 ====================
@@ -990,12 +1011,123 @@ def cmd_web_hud(args):
         server.shutdown()
         print("\nWeb HUD 已停止")
 
+# ==================== Implement 模式检测 (C6 代码化) ====================
+
+def parse_phases_from_plan_file(project_root):
+    """从最新 plan 文件解析 Phase 列表"""
+    import re
+    plans_dir = project_root / ".claude" / "plans"
+    if not plans_dir.exists():
+        return []
+    plan_files = sorted(plans_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not plan_files:
+        return []
+    text = plan_files[0].read_text(encoding="utf-8")
+    phases = []
+    pattern = r'^#{2,3}\s+(?:Phase|Task|阶段)\s*(\d+)\s*[：:.\-—]?\s*(.*?)$'
+    for m in re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE):
+        num = int(m.group(1))
+        name = m.group(2).strip() or f"Phase {num}"
+        phases.append({
+            "name": f"Phase {num}: {name}" if name != f"Phase {num}" else name,
+            "status": "PENDING",
+            "error_count": 0,
+        })
+    return phases
+
+ORCHESTRATOR_THRESHOLD = 3  # Phase > 此值触发 Orchestrator 模式
+
+def cmd_detect_mode(args):
+    """检测 implement 模式（C6: 代码化强制，不依赖 SKILL.md 建议）"""
+    phases = parse_phases_from_plan_file(PROJECT_ROOT)
+    mode = "orchestrator" if len(phases) > ORCHESTRATOR_THRESHOLD else "serial"
+
+    def updater(state):
+        for s in state["pipeline"]:
+            if s["name"] == "implement":
+                s["phases"] = phases
+                s["mode"] = mode
+                break
+
+    load_and_update_state(updater)
+    print(json.dumps({
+        "mode": mode,
+        "phase_count": len(phases),
+        "threshold": ORCHESTRATOR_THRESHOLD,
+        "phases": [p["name"] for p in phases],
+    }, ensure_ascii=False))
+
+# ==================== C5: Orchestrator 依赖分析（代码化） ====================
+
+def cmd_analyze_deps(args):
+    """分析 Plan 中 Phase 的文件依赖关系，输出可并行的批次分组"""
+    import re
+    plans_dir = PROJECT_ROOT / ".claude" / "plans"
+    if not plans_dir.exists():
+        print(json.dumps({"error": "no plans directory"}, ensure_ascii=False))
+        return
+    plan_files = sorted(plans_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not plan_files:
+        print(json.dumps({"error": "no plan files"}, ensure_ascii=False))
+        return
+
+    text = plan_files[0].read_text(encoding="utf-8")
+
+    # 按 Phase 分割文本
+    phase_pattern = r'^#{2,3}\s+(?:Phase|Task|阶段)\s*(\d+)\s*[：:.\-—]?\s*(.*?)$'
+    splits = list(re.finditer(phase_pattern, text, re.MULTILINE | re.IGNORECASE))
+    if not splits:
+        print(json.dumps({"error": "no phases found"}, ensure_ascii=False))
+        return
+
+    # 提取每个 Phase 的改动文件列表
+    file_pattern = r'[`"\']([\w./\\-]+\.(?:py|ts|tsx|js|jsx|java|go|rs|yaml|yml|json|sql|md|sh|toml|cfg|html|css|vue|svelte))[`"\']'
+    phase_files = {}
+    for i, m in enumerate(splits):
+        num = int(m.group(1))
+        start = m.end()
+        end = splits[i + 1].start() if i + 1 < len(splits) else len(text)
+        section = text[start:end]
+        files = set(re.findall(file_pattern, section))
+        phase_files[num] = files
+
+    # 构建依赖图：两个 Phase 有共同文件 → 不可并行
+    phase_nums = sorted(phase_files.keys())
+    batches = []
+    assigned = set()
+
+    for num in phase_nums:
+        if num in assigned:
+            continue
+        batch = [num]
+        assigned.add(num)
+        batch_files = set(phase_files[num])
+
+        for other in phase_nums:
+            if other in assigned:
+                continue
+            if not batch_files & phase_files[other]:  # 无交集 → 可并行
+                batch.append(other)
+                assigned.add(other)
+                batch_files |= phase_files[other]
+
+        batches.append(batch)
+
+    result = {
+        "plan_file": str(plan_files[0].name),
+        "total_phases": len(phase_nums),
+        "batches": [{"phases": b, "parallel": len(b) > 1} for b in batches],
+        "phase_files": {str(k): sorted(v) for k, v in phase_files.items()},
+    }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
 # ==================== Worker 管理 (Layer 2) ====================
 
 WORKERS_DIR = PROJECT_ROOT / ".claude" / "workers"
+WORKER_TIMEOUT_SEC = 600  # Worker 无心跳超过 10 分钟视为超时
 
 def cmd_worker_report(args):
-    """Worker 汇报完成状态"""
+    """Worker 汇报完成状态（H3: 加锁 + heartbeat）"""
     WORKERS_DIR.mkdir(parents=True, exist_ok=True)
     report = {
         "worker_id": args.worker_id,
@@ -1003,29 +1135,46 @@ def cmd_worker_report(args):
         "status": args.status.upper(),
         "worktree_branch": args.branch or "",
         "completed_at": now_iso(),
+        "heartbeat_at": now_iso(),
     }
     report_file = WORKERS_DIR / f"worker-{args.worker_id}.json"
-    report_file.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    lock = FileLock(str(report_file) + ".lock", timeout=5)
+    with lock:
+        report_file.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False))
 
 def cmd_worker_status(args):
-    """Orchestrator 查询所有 Worker 状态"""
+    """Orchestrator 查询所有 Worker 状态（H3: 超时检测）"""
     if not WORKERS_DIR.exists():
-        print(json.dumps({"workers": [], "total": 0, "done": 0, "failed": 0, "all_done": False}, ensure_ascii=False))
+        print(json.dumps({"workers": [], "total": 0, "done": 0, "failed": 0, "timed_out": 0, "all_done": False}, ensure_ascii=False))
         return
     workers = []
+    now_dt = datetime.now(timezone.utc)
     for f in sorted(WORKERS_DIR.glob("worker-*.json")):
         try:
-            workers.append(json.loads(f.read_text(encoding="utf-8")))
+            lock = FileLock(str(f) + ".lock", timeout=2)
+            with lock:
+                w = json.loads(f.read_text(encoding="utf-8"))
+            # 超时检测：IN_PROGRESS 且 heartbeat 超过阈值
+            if w.get("status") == "IN_PROGRESS":
+                hb = w.get("heartbeat_at", "")
+                if hb:
+                    from datetime import timezone as tz
+                    hb_dt = datetime.fromisoformat(hb.replace("Z", "+00:00"))
+                    if (now_dt - hb_dt).total_seconds() > WORKER_TIMEOUT_SEC:
+                        w["status"] = "TIMEOUT"
+            workers.append(w)
         except (json.JSONDecodeError, OSError):
             pass
-    all_done = all(w["status"] == "DONE" for w in workers) if workers else False
-    failed = [w for w in workers if w["status"] == "FAILED"]
+    done_count = sum(1 for w in workers if w["status"] == "DONE")
+    failed_count = sum(1 for w in workers if w["status"] in ("FAILED", "TIMEOUT"))
+    all_done = (done_count + failed_count) == len(workers) if workers else False
     print(json.dumps({
         "workers": workers,
         "total": len(workers),
-        "done": sum(1 for w in workers if w["status"] == "DONE"),
-        "failed": len(failed),
+        "done": done_count,
+        "failed": failed_count,
+        "timed_out": sum(1 for w in workers if w["status"] == "TIMEOUT"),
         "all_done": all_done,
     }, ensure_ascii=False))
 
@@ -1097,6 +1246,12 @@ def main():
     # worker-cleanup
     sub.add_parser("worker-cleanup")
 
+    # detect-mode (C6: 自动检测 implement 模式)
+    sub.add_parser("detect-mode")
+
+    # analyze-deps (C5: Orchestrator 依赖分析)
+    sub.add_parser("analyze-deps")
+
     # log (write autoloop log entry)
     p_log = sub.add_parser("log")
     p_log.add_argument("stage")
@@ -1131,6 +1286,10 @@ def main():
         cmd_worker_status(args)
     elif args.cmd == "worker-cleanup":
         cmd_worker_cleanup(args)
+    elif args.cmd == "detect-mode":
+        cmd_detect_mode(args)
+    elif args.cmd == "analyze-deps":
+        cmd_analyze_deps(args)
     elif args.cmd == "log":
         autoloop_log(args.stage, args.phase, args.action, args.result, args.detail)
     else:
