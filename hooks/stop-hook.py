@@ -35,60 +35,41 @@ RATE_LIMIT_PAUSE_MIN = 15      # rate limit 暂停时长
 
 def find_project_root():
     """
-    查找项目根目录。优先从 cwd 向上找 .git，
-    如果找不到（Hook cwd 可能不在项目目录下），
-    则扫描常见工作目录下最近修改的 harness-state.json。
+    查找项目根目录（C4: 与 harness.py 逻辑统一）。
+    优先级: cwd 向上找 .git → cwd 有 harness-state → 扫描常见目录
     """
-    # 方式 1: 从 cwd 向上查找
+    # 方式 1: 从 cwd 向上查找 .git（与 harness.py 一致）
     p = Path.cwd()
     while p != p.parent:
-        if (p / ".git").exists() and (p / ".claude" / "harness-state.json").exists():
+        if (p / ".git").exists():
             return p
         p = p.parent
 
-    # 方式 2: cwd 下直接有 .claude/harness-state.json（非 git 项目）
-    cwd = Path.cwd()
-    if (cwd / ".claude" / "harness-state.json").exists():
-        return cwd
+    # 方式 2: cwd 下有 harness-state.json（非 git 项目）
+    if (Path.cwd() / ".claude" / "harness-state.json").exists():
+        return Path.cwd()
 
-    # 方式 3: 扫描常见工作目录，找最近修改的 harness-state.json
-    scan_dirs = []
-    work_candidates = [
-        Path.home() / "work",
-        Path.home() / "projects",
-        Path.home() / "src",
-        Path.home() / "dev",
-        Path.home() / "repos",
-    ]
-    # Windows 额外扫描盘根下常见目录
+    # 方式 3: 扫描常见目录（限制扫描量，最多 100 个目录）
+    scan_roots = [Path.home() / "work", Path.home() / "projects", Path.home() / "dev"]
     if os.name == "nt":
-        for drive in ["C", "D", "E"]:
-            for name in ["work", "projects", "dev", "src"]:
-                work_candidates.append(Path(f"{drive}:/{name}"))
-    # Unix 额外扫描 /opt 等
-    else:
-        work_candidates.append(Path("/opt"))
-    for wc in work_candidates:
+        scan_roots.extend(Path(f"{d}:/work") for d in ["C", "D"])
+    best, best_mtime = None, 0
+    for root in scan_roots:
         try:
-            if wc.exists() and wc.is_dir():
-                scan_dirs.extend(d for d in wc.iterdir() if d.is_dir())
+            if not root.is_dir():
+                continue
+            for d in list(root.iterdir())[:100]:
+                if not d.is_dir():
+                    continue
+                sf = d / ".claude" / "harness-state.json"
+                if sf.exists():
+                    mtime = sf.stat().st_mtime
+                    if mtime > best_mtime:
+                        best_mtime = mtime
+                        best = d
         except (PermissionError, OSError):
             pass
-
-    best = None
-    best_mtime = 0
-    for d in scan_dirs:
-        state = d / ".claude" / "harness-state.json"
-        if state.exists():
-            mtime = state.stat().st_mtime
-            if mtime > best_mtime:
-                best_mtime = mtime
-                best = d
-
-    if best:
-        return best
-
-    return Path.cwd()
+    return best or Path.cwd()
 
 def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -311,20 +292,11 @@ def main():
 
     max_retries = state.get("metrics", {}).get("max_retries", 3)
 
-    # ==================== 防线 1: Rate Limit 检测 ====================
-    last_msg = hook_input.get("last_assistant_message", "")
-    if any(kw in last_msg.lower() for kw in RATE_LIMIT_KEYWORDS):
-        state["paused"] = True
-        state["pause_reason"] = "rate_limit"
-        state["resume_at"] = (now_utc() + timedelta(minutes=RATE_LIMIT_PAUSE_MIN)).isoformat()
-        save_state(state, state_file)
-        log_eval(project_root, state, "rate_limit_pause",
-                 f"暂停 {RATE_LIMIT_PAUSE_MIN}min，恢复时间: {state['resume_at']}")
-        sys.exit(0)
+    # ==================== 防线优先级（C3: 从互斥改为有序聚合） ====================
+    # 优先级: context_overflow > rate_limit > 超时/频率
+    # context_overflow 必须最先检查——上下文满时必须放行让 compact，其他防线都无意义
 
-    # ==================== 防线 2: 上下文使用率 ====================
-    # 学习 OMC: 上下文满时必须放行（让 Claude Code 自动 compact），不能 block
-    # 只标记 remember 为 PENDING，compact 后新会话续接时自然会跑 remember
+    # ==================== 防线 1: 上下文使用率（最高优先级） ====================
     ctx = hook_input.get("context_window", {})
     ctx_used = ctx.get("used", 0)
     ctx_total = ctx.get("total", 1)
@@ -336,6 +308,17 @@ def main():
         save_state(state, state_file)
         log_eval(project_root, state, "context_overflow", f"ctx={ctx_pct:.0f}%，放行让 compact")
         output_continue()
+        sys.exit(0)
+
+    # ==================== 防线 2: Rate Limit 检测 ====================
+    last_msg = hook_input.get("last_assistant_message", "")
+    if any(kw in last_msg.lower() for kw in RATE_LIMIT_KEYWORDS):
+        state["paused"] = True
+        state["pause_reason"] = "rate_limit"
+        state["resume_at"] = (now_utc() + timedelta(minutes=RATE_LIMIT_PAUSE_MIN)).isoformat()
+        save_state(state, state_file)
+        log_eval(project_root, state, "rate_limit_pause",
+                 f"暂停 {RATE_LIMIT_PAUSE_MIN}min，恢复时间: {state['resume_at']}")
         sys.exit(0)
 
     # ==================== 防线 3: 单阶段超时 ====================
@@ -414,13 +397,64 @@ def main():
         state["metrics"]["stages_completed"] = state["metrics"].get("stages_completed", 0) + 1
         save_state(state, state_file)
 
+    # ==================== 阶段产出验证 ====================
+
+    def has_valid_reports(pattern, min_size=100):
+        """H2: 检查报告文件存在且非空（>100 字节）"""
+        reports_dir = project_root / ".claude" / "reports"
+        if not reports_dir.exists():
+            return False
+        return any(f.stat().st_size >= min_size for f in reports_dir.glob(pattern))
+
+    # audit 阶段标记 DONE 但缺少审计报告 → 打回重做
+    if current == "audit" and stage.get("status") == "DONE":
+        if not has_valid_reports("audit-*.md"):
+            stage["status"] = "IN_PROGRESS"
+            save_state(state, state_file)
+            reason = (
+                "audit 阶段缺少有效审计报告。请按 generic-audit skill 执行代码审计，"
+                "输出报告到 .claude/reports/audit-{module}-{date}.md（不少于 100 字节），再标记 audit DONE。"
+            )
+            output_block(reason, state, project_root)
+            return
+
+    # review 阶段标记 DONE 但缺少审查报告 → 打回重做
+    if current == "review" and stage.get("status") == "DONE":
+        has_review = has_valid_reports("review-*.md")
+        has_final = has_valid_reports("final-review*")
+        if not has_review and not has_final:
+            stage["status"] = "IN_PROGRESS"
+            save_state(state, state_file)
+            reason = (
+                "review 阶段缺少审查报告。请按 generic-review skill 要求执行三路并行审查：\n"
+                "1. Agent(run_in_background=true): 代码质量审查 → .claude/reports/review-code.md\n"
+                "2. Agent(run_in_background=true): 安全审查 → .claude/reports/review-security.md\n"
+                "3. Agent(run_in_background=true): 架构审查 → .claude/reports/review-arch.md\n"
+                "三路完成后汇总到 .claude/reports/final-review.md，再标记 review DONE。"
+            )
+            output_block(reason, state, project_root)
+            return
+
     # ==================== 并行组检查 ====================
     current_group = stage.get("parallel_group")
     if current_group and stage.get("status") == "DONE":
-        # 并行组内一个阶段完成，检查组内其他成员
-        group_stages = [s for s in pipeline if s.get("parallel_group") == current_group]
+        # H1: 按 pipeline 原始顺序排序，确保确定性
+        pipeline_order = {s["name"]: i for i, s in enumerate(pipeline)}
+        group_stages = sorted(
+            [s for s in pipeline if s.get("parallel_group") == current_group],
+            key=lambda s: pipeline_order.get(s["name"], 999)
+        )
         pending = [s for s in group_stages if s["status"] in ("PENDING", "IN_PROGRESS")]
         if pending:
+            # H5: 并行组超时检测——IN_PROGRESS 超过 30 分钟视为卡住
+            stuck = []
+            for ps in pending:
+                if ps.get("status") == "IN_PROGRESS" and ps.get("started_at"):
+                    if elapsed_seconds(ps["started_at"]) > STAGE_TIMEOUT_SEC:
+                        stuck.append(ps["name"])
+            if stuck:
+                log_eval(project_root, state, "parallel_group_timeout",
+                         f"并行组 {current_group} 中 {'、'.join(stuck)} 超时")
             # 组内还有未完成的，不推进
             sys.exit(0)
         # 组内全部完成，推进到下一阶段
@@ -483,7 +517,8 @@ def output_block(reason, state, project_root):
 
 def save_state(state, path):
     state["updated_at"] = now_iso()
-    lock = FileLock(str(path) + ".lock", timeout=5)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(path) + ".lock", timeout=10)
     with lock:
         path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 

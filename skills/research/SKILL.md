@@ -28,7 +28,7 @@ model: opus
 
 ### 第二步: 整合报告
 
-汇总所有 subagent 的发现，保存到 `.claude/research/{topic}.md`:
+汇总所有 subagent 的发现，保存到 `.claude/researches/{topic}.md`:
 
 ```markdown
 # {topic} 研究报告

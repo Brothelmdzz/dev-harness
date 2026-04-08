@@ -108,7 +108,7 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/skill-resolver.py" <stage_name>
 ### research 阶段
 - 只在路线 B 执行
 - 调用解析到的 research Skill
-- 产出: `.claude/research/*.md`
+- 产出: `.claude/researches/*.md`
 
 ### prd 阶段
 - 路线 A/B 执行
@@ -121,15 +121,26 @@ python "${CLAUDE_PLUGIN_ROOT}/scripts/skill-resolver.py" <stage_name>
 - 产出: `.claude/plans/*.md`
 - **用户说"通过"后，更新状态并立即进入 implement**
 
-### implement 阶段（Orchestrator 模式）
+### implement 阶段（自动模式选择）
 
-读取 plan 文件 → 解析出 Phase 列表 → 写入 harness-state.json 的 phases 数组
+**第 0 步：运行模式检测（代码强制，不需要手动判断）**
 
-**Phase 数量判断**:
-- **≤ 3 个 Phase** → 串行模式（逐个执行）
-- **> 3 个 Phase** → Orchestrator 模式（分析依赖，批次并行）
+```bash
+# 自动检测模式 + 注册 phases 到 state（C6 代码化）
+python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" detect-mode
+# 输出: {"mode": "serial|orchestrator", "phase_count": N, "phases": [...]}
+```
 
-#### 串行模式（≤ 3 Phase）
+- `mode=serial` → 使用**串行模式**
+- `mode=orchestrator` → 运行依赖分析，使用**Orchestrator 模式**
+
+```bash
+# Orchestrator 模式时，运行依赖分析获取并行批次（C5 代码化）
+python "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" analyze-deps
+# 输出: {"batches": [{"phases": [1,2], "parallel": true}, {"phases": [3], "parallel": false}]}
+```
+
+#### 串行模式
 
 ```
 开始前:

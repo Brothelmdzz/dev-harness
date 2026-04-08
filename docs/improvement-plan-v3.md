@@ -296,7 +296,7 @@ qa_regression:
   - A: 组件层（扫描组件树、Props 定义、状态管理）
   - B: 路由/页面层（扫描路由配置、页面结构、权限控制）
   - C: API 集成层（扫描 API 调用、数据流、错误处理）
-- 输出 `.claude/research/{topic}-frontend.md`
+- 输出 `.claude/researches/{topic}-frontend.md`
 
 #### 1.4 新增 Skill: generic-product-prd
 
