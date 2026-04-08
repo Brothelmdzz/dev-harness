@@ -29,12 +29,19 @@ Dev Harness turns Claude Code into a **self-driving development pipeline**. Type
 
 ### Step 1: 添加 Marketplace 并安装插件
 
+**Claude Code:**
 ```bash
-# 在 Claude Code 中执行
 /plugin marketplace add brothelmdzz/dev-harness
 /plugin install dev-harness
 /reload-plugins
 ```
+
+**Cursor 2.5+:**
+```bash
+/add-plugin brothelmdzz/dev-harness
+```
+
+> Dev Harness 同时支持 Claude Code 和 Cursor（Agent Skills 开放标准）。Skills、Hooks、Agents 格式通用，无需适配。
 
 ### Step 2: 运行安装验证
 
