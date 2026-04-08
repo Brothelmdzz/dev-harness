@@ -1,7 +1,7 @@
 {
   "name": "dev-harness",
   "displayName": "Dev Harness",
-  "version": "3.2.1",
+  "version": "3.2.2",
   "description": "Harness Engineering development pipeline. Three-layer skill resolution, multi-agent parallel, auto-loop iteration, Web HUD, and 12 specialized agents.",
   "author": {
     "name": "brothelmdzz"

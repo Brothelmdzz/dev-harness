@@ -19,7 +19,14 @@ v3.0 改进:
 import json, sys, os
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from filelock import FileLock
+
+try:
+    from filelock import FileLock
+except ImportError:
+    class FileLock:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
 
 # ==================== 常量 ====================
 

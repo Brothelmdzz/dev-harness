@@ -10,7 +10,15 @@ Dev Harness — 状态管理 + HUD 面板 + Hook 入口
 import json, os, sys, time, glob, argparse, uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from filelock import FileLock
+
+try:
+    from filelock import FileLock
+except ImportError:
+    # 无 filelock 时降级为无操作锁（单 Agent 场景够用，多 Agent 并行时建议安装）
+    class FileLock:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
 
 # ==================== 路径 ====================
 
