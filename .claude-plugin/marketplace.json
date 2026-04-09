@@ -9,7 +9,7 @@
       "name": "dev-harness",
       "source": "./",
       "description": "Harness Engineering development pipeline. Three-layer skill resolution, auto-loop iteration, visual HUD, 12 specialized agents.",
-      "version": "3.2.3"
+      "version": "3.2.4"
     }
   ]
 }

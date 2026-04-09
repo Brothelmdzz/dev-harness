@@ -51,9 +51,10 @@ bash scripts/setup.sh
 
 插件安装后，所有脚本通过 Claude Code 官方环境变量 `${CLAUDE_PLUGIN_ROOT}` 定位。该变量在 Skill/Agent/Hook 内容中自动替换，在子进程中作为环境变量导出。
 
-**Hook 注册机制（两层）**：
-1. 首次安装：Claude Code 发现 `hooks/hooks.json` → 展开 `${CLAUDE_PLUGIN_ROOT}` 写入 `settings.json`
-2. 版本升级防护：`scripts/setup.sh` 部署 wrapper（`~/.claude/hooks/dev-harness-stop.py`）→ 通过 `installed_plugins.json` 动态查找实际路径，避免版本号硬编码失效
+**Hook 注册机制**：
+- `hooks/hooks.json` 注册 3 个 Hook：SessionStart（环境检测）、Stop（六道防线）、PostToolUse（phases 自动注册）
+- 所有 Python 脚本通过 `scripts/dh-python.sh` 运行，优先使用插件内置 `.venv`
+- 版本升级防护：`scripts/fix-hook-path.sh` 通过 `installed_plugins.json` 动态查找路径
 
 ### 核心流
 
