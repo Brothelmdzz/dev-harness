@@ -14,7 +14,7 @@ def parse_phases_from_plan(plan_path):
     text = Path(plan_path).read_text(encoding="utf-8")
     phases = []
     # 匹配: ## Phase N / ### Task N / ## 阶段 N（支持中英文冒号和各种分隔符）
-    pattern = r'^#{2,3}\s+(?:Phase|Task|阶段)\s*(\d+)\s*[：:.\-—]?\s*(.*?)$'
+    pattern = r'^#{2,3}\s+(?:Phase|PHASE|Task|TASK|阶段|第)\s*(\d+)\s*(?:阶段)?\s*[：:.\-—]?\s*(.*?)$'
     for m in re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE):
         num = int(m.group(1))
         name = m.group(2).strip() or f"Phase {num}"
@@ -73,10 +73,11 @@ def main():
         from filelock import FileLock
         lock = FileLock(str(state_file) + ".lock", timeout=5)
     except ImportError:
-        # filelock 未安装时降级为无锁写入
-        lock = open(os.devnull, "w")  # no-op context manager
-        lock.__enter__ = lambda: lock
-        lock.__exit__ = lambda *a: None
+        # filelock 未安装时降级为无操作锁（与 harness.py 一致）
+        class _NoopLock:
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+        lock = _NoopLock()
 
     with lock:
         try:

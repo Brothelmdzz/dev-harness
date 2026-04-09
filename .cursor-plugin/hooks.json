@@ -1,0 +1,47 @@
+{
+  "_comment": [
+    "Cursor IDE 适配版 hooks.json",
+    "CURSOR_PLUGIN_ROOT 是 Cursor 插件系统的等价变量，",
+    "功能上等同于 Claude Code 的 CLAUDE_PLUGIN_ROOT，",
+    "两者都指向插件安装根目录。",
+    "如需同步修改，请同时更新 hooks/hooks.json（Claude Code 原版）。"
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CURSOR_PLUGIN_ROOT}/hooks/session-init.sh\"",
+            "timeout": 3000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CURSOR_PLUGIN_ROOT}/scripts/dh-python.sh\" \"${CURSOR_PLUGIN_ROOT}/hooks/stop-hook.py\"",
+            "timeout": 5000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CURSOR_PLUGIN_ROOT}/scripts/dh-python.sh\" \"${CURSOR_PLUGIN_ROOT}/hooks/plan-watcher.py\"",
+            "timeout": 3000
+          }
+        ]
+      }
+    ]
+  }
+}

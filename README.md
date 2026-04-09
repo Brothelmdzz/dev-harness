@@ -71,6 +71,52 @@ Claude 会自动：
 
 ---
 
+## Commands
+
+Dev Harness 提供 **3 种运行模式**和 **6 个入口命令**，按任务规模选择：
+
+| 命令 | 模式 | 场景 | 执行内容 |
+|------|------|------|---------|
+| **`/dev`** | pipeline | **完整流程** — 新功能/中型改动 | research → plan → implement → audit + docs + test → review → remember |
+| **`/fix`** | single | **快速修复** — Bug 修复/小改动 | implement + test（跳过所有其他阶段） |
+| **`/test`** | single | **只跑测试** — 验证现有代码 | 自动检测测试框架并运行 |
+| **`/audit`** | single | **只做审计** — 代码质量检查 | 对比 plan 与实现，输出审计报告 |
+| **`/review`** | single | **只做审查** — PR 代码审查 | 三路并行：code + security + architecture |
+| **`/ask`** | conversation | **对话问答** — 不改代码 | 纯 Q&A，stop-hook 不介入，不创建 pipeline |
+
+### 模式对比
+
+| 模式 | state 行为 | stop-hook | 典型耗时 |
+|------|-----------|-----------|---------|
+| **pipeline** | 完整 pipeline 状态机 | 六道防线 + 阶段自动推进 | 10 分钟 ~ 2 小时 |
+| **single** | 只记录指定阶段 | 只检查指定阶段完成 | 1 ~ 15 分钟 |
+| **conversation** | 创建但不介入 | 直接放行 | 实时 |
+
+### 使用示例
+
+```bash
+# 大型重构 - 走完整流程
+/dev
+# → 实现"用户中心支持 OAuth 登录"
+
+# 小 bug 修复 - 跳过 plan/audit/review
+/fix
+# → "修复 login 页面按钮点击无响应"
+
+# CI 挂了想先跑一遍测试
+/test
+
+# PR review
+/review
+# → 三路并行审查 + 汇总报告到 .claude/reports/final-review.md
+
+# 只是想聊聊架构
+/ask
+# → "解释一下这个项目的三层 Skill 解析机制"
+```
+
+---
+
 ## What's Inside
 
 ### Skills (18)
@@ -167,7 +213,13 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts
 # 浏览器打开 http://localhost:1603
 ```
 
-多项目 tab 切换 · Pipeline 进度条 · Phase 门禁结果 · 指标面板 · 2 秒刷新
+**v3.3 特性**:
+- **SSE 实时推送** — 0.5 秒检测 state 变化，连接失败自动降级为 2 秒轮询
+- **Worker 可视化** — Orchestrator 模式下并行批次进度 + Worker 分支名 + 状态
+- **评测趋势图** — Canvas 折线图显示 score / pass rate 历史走势
+- **移动端适配** — 768px 断点，单列布局 + 下拉选择
+- **完成项目过滤** — 默认隐藏已结束任务，勾选 "show completed" 查看全部
+- **安全默认** — 绑定 `127.0.0.1`，需外部访问用 `--bind 0.0.0.0`
 
 ---
 
@@ -224,10 +276,10 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/scaffold.sh" my-audit
 
 ```bash
 # 状态管理
-harness.py init "task" --route C [--session-id ID]
-harness.py update <stage> <status> [--phase N] [--gate build=pass]
-harness.py detect-mode                    # C6: 自动检测 serial/orchestrator
-harness.py analyze-deps                   # C5: Phase 依赖分析 + 并行批次
+harness.py init "task" --route C [--mode pipeline|single|conversation] [--skills implement,test]
+harness.py update <stage> <status> [--phase N] [--gate build=pass] [--gate test=pass]
+harness.py detect-mode                    # 自动检测 serial/orchestrator
+harness.py analyze-deps                   # Phase 依赖分析 + 并行批次
 
 # Worker 管理
 harness.py worker-report <id> --phase <N> --status DONE [--branch <b>]
@@ -235,12 +287,20 @@ harness.py worker-status
 harness.py worker-cleanup
 
 # 可视化
-harness.py web-hud [--port 1603] [--project /path]
+harness.py web-hud [--port 1603] [--bind 127.0.0.1] [--project /path]
 harness.py hud --watch [--rich] [--project /path]
 
 # Skill 解析
 skill-resolver.py <stage> [--profile frontend] [--verbose]
 skill-resolver.py --all
+
+# v3.3 新增: 通知 + 团队看板 + Skill 建议
+notify.py --title "X" --message "Y" --level success [--lark]
+team-report.py [--json] [-o report.md]
+skill-suggest.py [--threshold 80] [--consecutive 3]
+
+# 版本同步
+bash sync-plugin-meta.sh [3.4.0]
 ```
 
 ---

@@ -1,8 +1,17 @@
 {
   "name": "dev-harness",
-  "version": "3.2.4",
-  "description": "Harness Engineering development pipeline for Claude Code. Three-layer skill resolution, auto-loop iteration, visual HUD, and 12 specialized agents.",
-  "author": { "name": "brothelmdzz" },
+  "version": "3.3.0",
+  "description": "Dev Harness - 自驱动开发流水线 | 命令: /dev (全流程) /fix (快速修复) /test (运行测试) /audit (代码审计) /review (代码审查) /ask (对话问答) | 特性: 三层 Skill 解析 + 多模式(pipeline/single/conversation) + Web HUD 实时面板 + 12 专用 Agent",
+  "author": {
+    "name": "brothelmdzz"
+  },
   "license": "MIT",
-  "homepage": "https://github.com/brothelmdzz/dev-harness"
+  "homepage": "https://github.com/brothelmdzz/dev-harness",
+  "keywords": [
+    "dev-pipeline",
+    "harness",
+    "multi-agent",
+    "auto-loop",
+    "web-hud"
+  ]
 }

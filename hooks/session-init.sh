@@ -1,9 +1,22 @@
 #!/bin/bash
 # SessionStart Hook: 检测 venv 是否就绪，未就绪时提示用户运行 setup
-# 输出到 stdout 的内容会被注入到 Claude 的上下文中
+# 输出到 stdout 的内容会被注入到 Claude/Cursor 的上下文中
+# 兼容 Claude Code (CLAUDE_PLUGIN_ROOT) 和 Cursor IDE (CURSOR_PLUGIN_ROOT)
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+
+# ==================== 插件根目录解析 ====================
+# 优先级: CLAUDE_PLUGIN_ROOT > CURSOR_PLUGIN_ROOT > 脚本相对路径 fallback
+if [ -n "$CLAUDE_PLUGIN_ROOT" ]; then
+    PLUGIN_ROOT="$CLAUDE_PLUGIN_ROOT"
+elif [ -n "$CURSOR_PLUGIN_ROOT" ]; then
+    PLUGIN_ROOT="$CURSOR_PLUGIN_ROOT"
+    # Cursor 环境下导出别名，让下游脚本统一使用 CLAUDE_PLUGIN_ROOT
+    export CLAUDE_PLUGIN_ROOT="$CURSOR_PLUGIN_ROOT"
+else
+    PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+fi
+
 VENV_DIR="$PLUGIN_ROOT/.venv"
 
 # 检查 venv 是否存在

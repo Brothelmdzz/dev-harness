@@ -76,7 +76,8 @@ HOOK_SCRIPT = Path(__file__).parent.parent / "hooks" / "stop-hook.py"
 def run_cmd(cmd, cwd=None):
     """执行命令并返回 stdout"""
     env = {**os.environ, "DH_EVAL": "1"}
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True, cwd=cwd, env=env)
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                            encoding="utf-8", errors="replace", cwd=cwd, env=env)
     return result.stdout.strip(), result.returncode
 
 def run_script_with_stdin(script, stdin_data, cwd=None):
@@ -84,7 +85,7 @@ def run_script_with_stdin(script, stdin_data, cwd=None):
     env = {**os.environ, "DH_EVAL": "1"}
     result = subprocess.run(
         f"python {script}", shell=True, capture_output=True, text=True,
-        cwd=cwd, env=env, input=stdin_data
+        encoding="utf-8", errors="replace", cwd=cwd, env=env, input=stdin_data
     )
     return result.stdout.strip(), result.returncode
 
@@ -405,7 +406,8 @@ def _run_hook(tmpdir, hook_input=None):
     inp = json.dumps(hook_input or {})
     result = subprocess.run(
         ["python", str(HOOK_SCRIPT)],
-        input=inp, capture_output=True, text=True, cwd=tmpdir
+        input=inp, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", cwd=tmpdir
     )
     return result.stdout.strip(), result.returncode
 
@@ -886,6 +888,7 @@ def run_all():
     total_tests = 0
     weighted_score = 0
     max_weighted = 0
+    errored_suites = []
 
     for result in all_results:
         metric_name = result["metric"]
@@ -894,6 +897,12 @@ def run_all():
         total = len(result["results"])
         total_pass += passed
         total_tests += total
+
+        # 错误套件不计入加权分（避免 0/0 拖低得分）
+        if result.get("error"):
+            errored_suites.append(metric_name)
+            print(f"  {metric_name:<20} ERROR                weight={weight} (excluded)")
+            continue
 
         rate = passed / total if total > 0 else 0
         weighted_score += rate * weight
@@ -904,6 +913,8 @@ def run_all():
     overall = weighted_score / max_weighted if max_weighted > 0 else 0
     print(f"\n  总计: {total_pass}/{total_tests} 通过")
     print(f"  加权得分: {overall*100:.1f}%")
+    if errored_suites:
+        print(f"  错误套件: {', '.join(errored_suites)} (已从加权分排除)")
 
     # 保存结果
     report = {

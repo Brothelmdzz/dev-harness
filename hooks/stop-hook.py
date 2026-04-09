@@ -123,7 +123,7 @@ def parse_phases_from_plan(project_root):
         return []
     text = plan_files[0].read_text(encoding="utf-8")
     phases = []
-    pattern = r'^#{2,3}\s+(?:Phase|Task|阶段)\s*(\d+)\s*[：:.\-—]?\s*(.*?)$'
+    pattern = r'^#{2,3}\s+(?:Phase|PHASE|Task|TASK|阶段|第)\s*(\d+)\s*(?:阶段)?\s*[：:.\-—]?\s*(.*?)$'
     for m in re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE):
         num = int(m.group(1))
         name = m.group(2).strip() or f"Phase {num}"
@@ -198,6 +198,39 @@ def migrate_legacy_state(old):
 
 # ==================== 主逻辑 ====================
 
+def _handle_implement_continue(state, stage, project_root, state_file, max_retries, source=""):
+    """implement 阶段续跑统一逻辑（M8 去重）
+    返回 (action, reason):
+      - ("continue", reason) → 输出 block 继续执行
+      - ("exit", "")         → 退出，不续跑
+      - ("mark_done", "")    → phases 全部完成，标记 DONE 后推进
+    """
+    phases = stage.get("phases", [])
+    # fallback: phases 为空时从 plan 文件解析
+    if not phases:
+        phases = parse_phases_from_plan(project_root)
+        if phases:
+            stage["phases"] = phases
+            save_state(state, state_file)
+            log_eval(project_root, state, "phases_fallback",
+                     f"从 plan 文件解析到 {len(phases)} 个 Phase ({source})")
+    # 检查死循环
+    for p in phases:
+        if p.get("error_count", 0) >= max_retries:
+            return ("exit", "")
+    # 查找待执行 Phase
+    pending = [p for p in phases if p.get("status") == "PENDING"]
+    if pending:
+        reason = f"继续实现下一个 Phase: {pending[0].get('name', '?')}。读取 plan 文件确认内容后执行。完成后更新 harness-state.json。"
+        return ("continue", reason)
+    if not phases:
+        return ("exit", "")
+    # phases 非空且全部完成 → 标记 DONE
+    stage["status"] = "DONE"
+    stage["completed_at"] = now_iso()
+    state["metrics"]["stages_completed"] = state["metrics"].get("stages_completed", 0) + 1
+    return ("mark_done", "")
+
 def output_continue():
     """允许停止（不阻拦），学习 OMC 的 {continue: true} 模式"""
     print(json.dumps({"continue": True, "suppressOutput": True}))
@@ -265,6 +298,12 @@ def main():
     if "stages" in state and "pipeline" not in state:
         state = migrate_legacy_state(state)
         state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # ==================== 多模式分流（v3.3） ====================
+    mode = state.get("mode", "pipeline")
+    if mode == "conversation":
+        # conversation 模式不干预
+        sys.exit(0)
 
     # ==================== Session ID 隔离 ====================
     # 如果 hook 输入中有 session_id，且 state 中也有，两者必须匹配
@@ -354,55 +393,23 @@ def main():
                  f"{SLIDING_WINDOW_MIN}min 内 {recent_count} 次续跑 > {SLIDING_WINDOW_MAX_EVENTS}")
         sys.exit(0)
 
-    # ==================== 防循环: stop_hook_active ====================
-    if stop_hook_active:
-        if current == "implement" and stage.get("status") == "IN_PROGRESS":
-            phases = stage.get("phases", [])
-            # fallback: phases 为空时从 plan 文件解析
-            if not phases:
-                phases = parse_phases_from_plan(project_root)
-                if phases:
-                    stage["phases"] = phases
-                    save_state(state, state_file)
-                    log_eval(project_root, state, "phases_fallback",
-                             f"从 plan 文件解析到 {len(phases)} 个 Phase (stop_hook_active)")
-            for p in phases:
-                if p.get("error_count", 0) >= max_retries:
-                    sys.exit(0)
-            pending = [p for p in phases if p.get("status") == "PENDING"]
-            if pending:
-                reason = f"继续实现下一个 Phase: {pending[0].get('name', '?')}。读取 plan 文件确认内容后执行。完成后更新 harness-state.json。"
-                output_block(reason, state, project_root)
-                return
-        sys.exit(0)
-
-    # ==================== 首次触发 ====================
+    # ==================== implement 阶段续跑逻辑（统一处理） ====================
     if current == "implement" and stage.get("status") == "IN_PROGRESS":
-        phases = stage.get("phases", [])
-        # fallback: phases 为空时从 plan 文件解析
-        if not phases:
-            phases = parse_phases_from_plan(project_root)
-            if phases:
-                stage["phases"] = phases
-                save_state(state, state_file)
-                log_eval(project_root, state, "phases_fallback",
-                         f"从 plan 文件解析到 {len(phases)} 个 Phase (首次触发)")
-        for p in phases:
-            if p.get("error_count", 0) >= max_retries:
-                sys.exit(0)
-        pending = [p for p in phases if p.get("status") == "PENDING"]
-        if pending:
-            reason = f"继续实现下一个 Phase: {pending[0].get('name', '?')}。读取 plan 文件确认该 Phase 内容，然后执行。完成后更新 harness-state.json。"
+        action, reason = _handle_implement_continue(
+            state, stage, project_root, state_file, max_retries,
+            source="stop_hook_active" if stop_hook_active else "首次触发"
+        )
+        if action == "continue":
             output_block(reason, state, project_root)
             return
-        if not phases:
-            # phases 为空且 fallback 也没找到 plan → 无法判断，放行
+        elif action == "mark_done":
+            save_state(state, state_file)
+            # fall through 到阶段推进逻辑
+        else:  # action == "exit"
             sys.exit(0)
-        # phases 非空且全部完成 → 标记 DONE
-        stage["status"] = "DONE"
-        stage["completed_at"] = now_iso()
-        state["metrics"]["stages_completed"] = state["metrics"].get("stages_completed", 0) + 1
-        save_state(state, state_file)
+    elif stop_hook_active:
+        # 非 implement 阶段的 stop_hook_active → 不再续跑
+        sys.exit(0)
 
     # ==================== 阶段产出验证 ====================
 
@@ -477,6 +484,20 @@ def main():
         return
 
     if stage.get("status") == "DONE":
+        # single 模式: 所有指定阶段完成即结束
+        if mode == "single":
+            pending_stages = [s for s in pipeline if s["status"] == "PENDING"]
+            if not pending_stages:
+                sys.exit(0)  # 全部完成，正常结束
+            # 还有待执行的阶段 → 续跑
+            next_name = pending_stages[0]["name"]
+            state["current_stage"] = next_name
+            state["metrics"]["auto_continues"] = state["metrics"].get("auto_continues", 0) + 1
+            save_state(state, state_file)
+            reason = f"单 Skill 模式: {current} 完成。继续执行 {next_name}。"
+            output_block(reason, state, project_root)
+            return
+
         next_names = find_next(pipeline, current)
         if not next_names:
             sys.exit(0)
@@ -507,13 +528,13 @@ def find_next(pipeline, current_name):
             continue
         if not found:
             continue
-        if s.get("status") not in ("PENDING", "WAITING"):
+        if s.get("status") != "PENDING":
             continue
         group = s.get("parallel_group")
         if group:
             return [ps["name"] for ps in pipeline
                     if ps.get("parallel_group") == group
-                    and ps.get("status") in ("PENDING", "WAITING")]
+                    and ps.get("status") == "PENDING"]
         return [s["name"]]
     return []
 

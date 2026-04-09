@@ -54,6 +54,25 @@ skill_aliases:
     - remember
     - generic-remember
 
+# v3.3 新增: 轻量入口 Skill
+# 这些是单 Skill 模式的入口，不走完整 pipeline
+lightweight_entries:
+  fix:
+    mode: single
+    skills: [implement, test]
+  test-skill:
+    mode: single
+    skills: [test]
+  audit-skill:
+    mode: single
+    skills: [audit]
+  review-skill:
+    mode: single
+    skills: [review]
+  ask:
+    mode: conversation
+    skills: []
+
 # v3.0 新增: 角色 Profile 专用别名
 # 解析时先尝试 profile 专用，再 fallback 到上面的通用列表
 profile_aliases:

@@ -42,6 +42,17 @@ CONFIG_FILE = PROJECT_ROOT / ".claude" / "dev-config.yml"
 PLANS_DIR = PROJECT_ROOT / ".claude" / "plans"
 EVAL_LOG = PROJECT_ROOT / ".claude" / "harness-eval.jsonl"
 
+def set_project_root(root):
+    """统一切换项目根目录，同步更新所有派生路径"""
+    global PROJECT_ROOT, STATE_FILE, CONFIG_FILE, PLANS_DIR, EVAL_LOG, AUTOLOOP_LOG, WORKERS_DIR
+    PROJECT_ROOT = Path(root).resolve()
+    STATE_FILE = PROJECT_ROOT / ".claude" / "harness-state.json"
+    CONFIG_FILE = PROJECT_ROOT / ".claude" / "dev-config.yml"
+    PLANS_DIR = PROJECT_ROOT / ".claude" / "plans"
+    EVAL_LOG = PROJECT_ROOT / ".claude" / "harness-eval.jsonl"
+    AUTOLOOP_LOG = PROJECT_ROOT / ".claude" / "autoloop-results.log"
+    WORKERS_DIR = PROJECT_ROOT / ".claude" / "workers"
+
 # 中央 session 索引：session_id → 项目路径
 SESSION_INDEX = Path.home() / ".claude" / "dev-harness-sessions.json"
 
@@ -121,17 +132,18 @@ def save_state(state):
         STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def load_and_update_state(updater_fn):
-    """原子化 read-modify-write：在同一把锁内读取、修改、保存状态"""
+    """原子化 read-modify-write：在同一把锁内读取、修改、保存状态
+    返回更新后的 state dict（文件不存在时返回 None）"""
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     with _state_lock():
         try:
             state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
             return None
-        result = updater_fn(state)
+        updater_fn(state)
         state["updated_at"] = now_iso()
         STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        return result
+        return state
 
 def now_iso():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -160,7 +172,12 @@ ROUTE_STAGES = {
 
 def cmd_init(args):
     route = args.route or "C"
+    mode = getattr(args, 'mode', None) or "pipeline"
     active_stages = ROUTE_STAGES.get(route, ROUTE_STAGES["C"])
+
+    # single 模式: pipeline 只含指定的 skill 阶段
+    if mode == "single" and getattr(args, 'skills', None):
+        active_stages = args.skills.split(",")
 
     pipeline = []
     for stage in DEFAULT_PIPELINE:
@@ -176,6 +193,7 @@ def cmd_init(args):
     state = {
         "version": "1.1",
         "session_id": session_id,
+        "mode": mode,
         "project": PROJECT_ROOT.name,
         "task": {
             "name": args.task_name,
@@ -278,15 +296,39 @@ def find_next_runnable(pipeline, current_name):
             continue
         if not found_current:
             continue
-        if s["status"] not in ("PENDING", "WAITING"):
+        if s["status"] != "PENDING":
             continue
         group = s.get("parallel_group")
         if group:
             return [ps["name"] for ps in pipeline
                     if ps.get("parallel_group") == group
-                    and ps["status"] in ("PENDING", "WAITING")]
+                    and ps["status"] == "PENDING"]
         return [s["name"]]
     return []
+
+# ==================== 通知集成 ====================
+
+def _try_notify_pipeline(state, new_status):
+    """Pipeline 完成或失败时触发桌面通知（静默失败，不影响主流程）"""
+    if new_status not in ("DONE", "FAILED"):
+        return
+    pipeline = state.get("pipeline", [])
+    # DONE: 检查是否全部完成
+    if new_status == "DONE":
+        if not all(s["status"] in ("DONE", "SKIP") for s in pipeline):
+            return
+    # FAILED: 立即通知
+    try:
+        from importlib.util import spec_from_file_location, module_from_spec
+        notify_path = Path(__file__).resolve().parent / "notify.py"
+        if not notify_path.exists():
+            return
+        spec = spec_from_file_location("notify", str(notify_path))
+        notify = module_from_spec(spec)
+        spec.loader.exec_module(notify)
+        notify.notify_pipeline_result(state)
+    except Exception:
+        pass  # 通知失败不应阻塞主流程
 
 # ==================== 状态更新 ====================
 
@@ -298,10 +340,13 @@ def cmd_update(args):
     def updater(state):
         for s in state["pipeline"]:
             if s["name"] == stage_name:
+                prev_status = s["status"]
                 s["status"] = new_status
                 if new_status == "DONE":
                     s["completed_at"] = now_iso()
-                    state["metrics"]["stages_completed"] += 1
+                    # 幂等保护: 只在首次 DONE 时计数
+                    if prev_status != "DONE":
+                        state["metrics"]["stages_completed"] += 1
                 elif new_status == "IN_PROGRESS":
                     s["started_at"] = now_iso()
 
@@ -316,7 +361,7 @@ def cmd_update(args):
                                 if len(parts) == 2:
                                     if "gates" not in p:
                                         p["gates"] = {}
-                                    p["gates"][parts[0]] = parts[1] == "pass"
+                                    p["gates"][parts[0]] = parts[1].lower() == "pass"
 
                 # 错误计数
                 if args.error:
@@ -358,20 +403,19 @@ def cmd_update(args):
     state = load_state()
     if state:
         log_eval_event(state, "update", f"{stage_name} -> {new_status}")
+        # Pipeline 完成/失败时发送桌面通知
+        _try_notify_pipeline(state, new_status)
     print(json.dumps({"stage": stage_name, "status": new_status}, ensure_ascii=False))
 
 # ==================== HUD 面板 ====================
 
 def cmd_hud(args):
-    global PROJECT_ROOT, STATE_FILE
     if getattr(args, 'project', None):
-        PROJECT_ROOT = find_project_root(args.project)
-        STATE_FILE = PROJECT_ROOT / ".claude" / "harness-state.json"
+        set_project_root(args.project)
     elif not STATE_FILE.exists():
         proj = find_latest_session_project()
         if proj:
-            PROJECT_ROOT = proj
-            STATE_FILE = PROJECT_ROOT / ".claude" / "harness-state.json"
+            set_project_root(proj)
 
     while True:
         state = load_state()
@@ -565,7 +609,7 @@ def cmd_autoloop_status(args):
 
     done = [s for s in pipeline if s["status"] == "DONE"]
     total = [s for s in pipeline if s["status"] != "SKIP"]
-    pending = [s for s in pipeline if s["status"] in ("PENDING", "WAITING")]
+    pending = [s for s in pipeline if s["status"] == "PENDING"]
 
     started = state.get("task", {}).get("started_at", "")
     elapsed = ""
@@ -664,7 +708,7 @@ def cmd_rich_hud(args):
             style_map = {
                 "DONE": "green", "IN_PROGRESS": "yellow",
                 "SKIP": "dim", "PENDING": "white",
-                "WAITING": "white", "BLOCKED": "red bold",
+                "BLOCKED": "red bold",
             }
 
             for s in pipeline:
@@ -742,25 +786,36 @@ WEB_HUD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <title>Dev Harness HUD</title>
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <style>
   :root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#c9d1d9; --dim:#8b949e;
           --green:#3fb950; --yellow:#d29922; --red:#f85149; --blue:#58a6ff; --purple:#bc8cff; }
   * { margin:0; padding:0; box-sizing:border-box; }
   body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',Consolas,monospace; font-size:14px; padding:20px; }
   h1 { color:var(--blue); font-size:18px; margin-bottom:4px; }
-  .meta { color:var(--dim); font-size:12px; margin-bottom:16px; }
-  .tabs { display:flex; gap:4px; margin-bottom:16px; flex-wrap:wrap; }
+  .meta { color:var(--dim); font-size:12px; margin-bottom:16px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .conn-status { display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:2px 8px;
+                 border-radius:10px; border:1px solid var(--border); }
+  .conn-status .indicator { width:6px; height:6px; border-radius:50%; }
+  .conn-live .indicator { background:var(--green); } .conn-live { color:var(--green); }
+  .conn-poll .indicator { background:var(--yellow); } .conn-poll { color:var(--yellow); }
+  .conn-off .indicator { background:var(--red); } .conn-off { color:var(--red); }
+  .tabs-bar { display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+  .tabs { display:flex; gap:4px; flex-wrap:wrap; flex:1; }
+  .show-all { color:var(--dim); font-size:11px; cursor:pointer; user-select:none; }
+  .show-all input { vertical-align:middle; margin-right:4px; }
   .tab { padding:6px 16px; border-radius:6px 6px 0 0; cursor:pointer; font-size:12px;
          background:var(--card); border:1px solid var(--border); border-bottom:none; color:var(--dim); }
   .tab.active { background:var(--bg); color:var(--blue); border-color:var(--blue); border-bottom:1px solid var(--bg); }
   .tab .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
   .dot.running { background:var(--yellow); } .dot.done { background:var(--green); } .dot.idle { background:var(--dim); }
+  .mobile-select { display:none; width:100%; padding:8px 12px; border-radius:6px; background:var(--card);
+                   color:var(--text); border:1px solid var(--border); font-family:inherit; font-size:13px; margin-bottom:16px; }
   .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
   .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
   .card h2 { color:var(--blue); font-size:14px; margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:8px; }
   .progress-bar { display:flex; height:6px; border-radius:3px; overflow:hidden; margin-bottom:16px; background:var(--border); }
-  .progress-bar .seg { height:100%; }
+  .progress-bar .seg { height:100%; transition:flex 0.3s; }
   .seg.done { background:var(--green); } .seg.active { background:var(--yellow); }
   .seg.pending { background:var(--border); } .seg.skip { background:transparent; }
   .stage { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border); }
@@ -779,8 +834,16 @@ WEB_HUD_HTML = r"""<!DOCTYPE html>
   .gate.pass { color:var(--green); } .gate.fail { color:var(--red); }
   .phase .err { color:var(--red); font-size:11px; }
   .workers { margin-top:12px; padding-top:12px; border-top:1px solid var(--border); }
-  .workers h3 { font-size:12px; color:var(--purple); margin-bottom:8px; }
-  .worker { display:flex; gap:8px; font-size:12px; padding:3px 0; }
+  .workers h3 { font-size:12px; color:var(--purple); margin-bottom:8px; display:flex; align-items:center; gap:6px; }
+  .workers .mode-badge { font-size:10px; padding:1px 6px; border-radius:3px; background:var(--purple); color:var(--bg); }
+  .worker { display:flex; gap:8px; font-size:12px; padding:4px 0; border-bottom:1px solid var(--border); align-items:center; }
+  .worker:last-child { border-bottom:none; }
+  .worker .w-id { color:var(--blue); min-width:80px; }
+  .worker .w-phase { color:var(--text); flex:1; }
+  .worker .w-branch { color:var(--dim); font-size:11px; }
+  .worker .w-status { min-width:70px; text-align:right; font-weight:bold; }
+  .batch-group { margin:8px 0; padding:8px; border:1px dashed var(--border); border-radius:4px; }
+  .batch-group .batch-label { font-size:10px; color:var(--dim); margin-bottom:4px; }
   .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
   .metric { text-align:center; }
   .metric .val { font-size:24px; font-weight:bold; }
@@ -789,138 +852,306 @@ WEB_HUD_HTML = r"""<!DOCTYPE html>
                    padding-top:12px; border-top:1px solid var(--border); font-size:12px; color:var(--dim); text-align:center; }
   .no-data { color:var(--dim); text-align:center; padding:40px; }
   .session-id { color:var(--purple); font-size:12px; }
+  .eval-section { margin-top:16px; }
+  .eval-chart-wrap { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
+  .eval-chart-wrap h2 { color:var(--blue); font-size:14px; margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:8px; }
+  .eval-chart-wrap canvas { width:100%; height:200px; }
+  .eval-legend { display:flex; gap:16px; margin-top:8px; font-size:11px; color:var(--dim); justify-content:center; }
+  .eval-legend span { display:flex; align-items:center; gap:4px; }
+  .eval-legend .swatch { width:10px; height:10px; border-radius:2px; display:inline-block; }
+  @media (max-width:768px) {
+    body { padding:12px 8px; font-size:13px; }
+    h1 { font-size:16px; }
+    .tabs { display:none; }
+    .mobile-select { display:block; }
+    .grid { grid-template-columns:1fr; gap:12px; }
+    .stage .name { width:70px; font-size:12px; }
+    .stage .dur { width:50px; font-size:11px; }
+    .phase { padding-left:20px; font-size:12px; }
+    .metrics { grid-template-columns:repeat(3,1fr); gap:8px; }
+    .metric .val { font-size:18px; }
+    .extra-metrics { grid-template-columns:repeat(2,1fr); }
+    .eval-chart-wrap canvas { height:150px; }
+    .worker { flex-wrap:wrap; }
+    .worker .w-branch { width:100%; padding-left:88px; }
+  }
 </style>
 </head>
 <body>
 <h1>Dev Harness HUD</h1>
-<div class="meta">Auto-refresh 2s | <span id="updated"></span></div>
-<div class="tabs" id="tabs"></div>
-<div id="app"><div class="no-data">正在搜索活跃项目...</div></div>
+<div class="meta">
+  <span id="conn-indicator" class="conn-status conn-off"><span class="indicator"></span><span id="conn-label">connecting</span></span>
+  <span id="updated"></span>
+</div>
+<div class="tabs-bar"><div class="tabs" id="tabs"></div><label class="show-all"><input type="checkbox" id="show-all" onchange="renderTabs()"> show completed</label></div>
+<select class="mobile-select" id="mobile-tabs" onchange="switchProject(this.value)"></select>
+<div id="app"><div class="no-data">connecting...</div></div>
+<div class="eval-section" id="eval-section" style="display:none">
+  <div class="eval-chart-wrap">
+    <h2>eval trend</h2>
+    <canvas id="eval-canvas"></canvas>
+    <div class="eval-legend">
+      <span><span class="swatch" style="background:#58a6ff"></span>score</span>
+      <span><span class="swatch" style="background:#3fb950"></span>pass rate</span>
+    </div>
+  </div>
+</div>
 <script>
-let projects = [];
-let activeProject = null;
+var projects=[],activeProject=null,evtSource=null,pollTimer=null,connMode='off',evalData=null;
 
-async function loadProjects() {
-  try {
-    const r = await fetch('/api/projects');
-    if (r.ok) projects = await r.json();
-    if (projects.length && !activeProject) activeProject = projects[0].path;
-    renderTabs();
-  } catch(e) {}
+function setConnMode(m){
+  connMode=m;
+  var el=document.getElementById('conn-indicator'),lb=document.getElementById('conn-label');
+  el.className='conn-status conn-'+m;
+  lb.textContent=m==='live'?'realtime':m==='poll'?'polling':'disconnected';
 }
 
-function renderTabs() {
-  if (!projects.length) { document.getElementById('tabs').innerHTML = ''; return; }
-  document.getElementById('tabs').innerHTML = projects.map(p => {
-    const isActive = p.path === activeProject;
-    const stage = p.current_stage || '';
-    const dotClass = stage ? (stage === 'remember' ? 'done' : 'running') : 'idle';
-    return `<div class="tab ${isActive?'active':''}" onclick="switchProject('${p.path.replace(/\\/g,'\\\\')}')">
-      <span class="dot ${dotClass}"></span>${p.name} <span style="color:var(--dim);font-size:10px">${stage}</span>
-    </div>`;
+function startSSE(){
+  if(evtSource){evtSource.close();evtSource=null;}
+  if(!activeProject)return;
+  try{evtSource=new EventSource('/api/events?project='+encodeURIComponent(activeProject));}catch(e){startPoll();return;}
+  evtSource.onopen=function(){setConnMode('live');stopPoll();};
+  evtSource.onmessage=function(e){try{render(JSON.parse(e.data));}catch(err){}};
+  evtSource.addEventListener('projects',function(e){
+    try{projects=JSON.parse(e.data);if(projects.length&&!activeProject){activeProject=projects[0].path;startSSE();}renderTabs();}catch(err){}
+  });
+  evtSource.onerror=function(){setConnMode('poll');if(evtSource){evtSource.close();evtSource=null;}startPoll();};
+}
+function startPoll(){if(pollTimer)return;setConnMode('poll');pollTimer=setInterval(function(){refresh();},2000);}
+function stopPoll(){if(pollTimer){clearInterval(pollTimer);pollTimer=null;}}
+
+async function loadProjects(){
+  try{var r=await fetch('/api/projects');if(r.ok)projects=await r.json();
+    if(projects.length&&!activeProject)activeProject=projects[0].path;renderTabs();}catch(e){}
+}
+function renderTabs(){
+  var tabsEl=document.getElementById('tabs'),selEl=document.getElementById('mobile-tabs');
+  var showAll=document.getElementById('show-all') && document.getElementById('show-all').checked;
+  var visible=showAll?projects:projects.filter(function(p){return !p.completed;});
+  // 若当前 active 项目被过滤掉，切到第一个可见项目
+  if(visible.length && !visible.find(function(p){return p.path===activeProject;})){
+    activeProject=visible[0].path;startSSE();refresh();
+  }
+  if(!visible.length){
+    tabsEl.innerHTML='<span style="color:var(--dim);font-size:11px">no active projects'+(projects.length?' ('+projects.length+' completed, tick to show)':'')+'</span>';
+    selEl.innerHTML='';return;
+  }
+  tabsEl.innerHTML=visible.map(function(p){
+    var isActive=p.path===activeProject,stage=p.current_stage||'idle',
+        dotClass=p.completed?'done':(stage?'running':'idle');
+    return '<div class="tab '+(isActive?'active':'')+'" onclick="switchProject(\''+p.path.replace(/\\/g,'\\\\')+'\')">'
+      +'<span class="dot '+dotClass+'"></span>'+p.name+' <span style="color:var(--dim);font-size:10px">'+(p.completed?'done':stage)+'</span></div>';
+  }).join('');
+  selEl.innerHTML=visible.map(function(p){
+    return '<option value="'+p.path.replace(/"/g,'&quot;')+'"'+(p.path===activeProject?' selected':'')+'>'+p.name+' ['+(p.completed?'done':p.current_stage||'idle')+']</option>';
   }).join('');
 }
+function switchProject(path){activeProject=path;renderTabs();startSSE();refresh();}
 
-function switchProject(path) { activeProject = path; refresh(); renderTabs(); }
-
-async function refresh() {
-  if (!activeProject) { await loadProjects(); return; }
-  try {
-    const r = await fetch('/api/state?project=' + encodeURIComponent(activeProject));
-    if (!r.ok) { document.getElementById('app').innerHTML = '<div class="no-data">等待 harness 会话启动...</div>'; return; }
-    const s = await r.json();
-    render(s);
-  } catch(e) {}
+async function refresh(){
+  if(!activeProject){await loadProjects();return;}
+  try{var r=await fetch('/api/state?project='+encodeURIComponent(activeProject));
+    if(!r.ok){document.getElementById('app').innerHTML='<div class="no-data">waiting...</div>';return;}
+    render(await r.json());
+  }catch(e){setConnMode('off');}
 }
 
-function render(s) {
-  const task = s.task || {};
-  const metrics = s.metrics || {};
-  const pipeline = s.pipeline || [];
-  const current = s.current_stage || '';
-  document.getElementById('updated').textContent = (s.updated_at||'').replace('T',' ').replace('Z','');
-
-  // 进度条
-  const active = pipeline.filter(x=>x.status!=='SKIP');
-  let barHtml = active.map(st => {
-    const cls = st.status==='DONE'?'done':st.status==='IN_PROGRESS'?'active':'pending';
-    return `<div class="seg ${cls}" style="flex:1" title="${st.name}: ${st.status}"></div>`;
+function render(s){
+  var task=s.task||{},metrics=s.metrics||{},pipeline=s.pipeline||[],current=s.current_stage||'';
+  document.getElementById('updated').textContent=(s.updated_at||'').replace('T',' ').replace('Z','');
+  var active=pipeline.filter(function(x){return x.status!=='SKIP';});
+  var barHtml=active.map(function(st){
+    var cls=st.status==='DONE'?'done':st.status==='IN_PROGRESS'?'active':'pending';
+    return '<div class="seg '+cls+'" style="flex:1" title="'+st.name+': '+st.status+'"></div>';
   }).join('');
-
-  let stagesHtml = '';
-  for (const st of pipeline) {
-    const isCur = st.name === current;
-    const icon = st.status==='DONE'?'✓':st.status==='IN_PROGRESS'?'▶':st.status==='SKIP'?'—':st.status==='FAILED'?'✗':'○';
-    const dur = calcDur(st);
-    const group = st.parallel_group ? `<span class="group-tag">⫘ ${st.parallel_group}</span>` : '';
-    stagesHtml += `<div class="stage ${isCur?'current':''}">
-      <span class="icon ${st.status}">${icon}</span>
-      <span class="name">${st.name}${group}</span>
-      <span class="status ${st.status}">${st.status}</span>
-      <span class="dur">${dur}</span>
-    </div>`;
-    if (st.name==='implement' && st.phases && st.phases.length) {
-      for (const p of st.phases) {
-        const pi = p.status==='DONE'?'✓':p.status==='IN_PROGRESS'?'▶':'○';
-        let gs = '';
-        if (p.gates) for (const [k,v] of Object.entries(p.gates))
-          gs += `<span class="gate ${v?'pass':'fail'}">${k}:${v?'✓':'✗'}</span>`;
-        const err = p.error_count ? `<span class="err">⚠${p.error_count}</span>` : '';
-        stagesHtml += `<div class="phase"><span class="${p.status}">${pi}</span> ${p.name||'Phase'} ${gs} ${err}</div>`;
+  var stagesHtml='';
+  for(var si=0;si<pipeline.length;si++){
+    var st=pipeline[si],isCur=st.name===current;
+    var icon=st.status==='DONE'?'\u2713':st.status==='IN_PROGRESS'?'\u25b6':st.status==='SKIP'?'\u2014':st.status==='FAILED'?'\u2717':'\u25cb';
+    var dur=calcDur(st);
+    var group=st.parallel_group?'<span class="group-tag">\u2ae8 '+st.parallel_group+'</span>':'';
+    stagesHtml+='<div class="stage '+(isCur?'current':'')+'">'
+      +'<span class="icon '+st.status+'">'+icon+'</span>'
+      +'<span class="name">'+st.name+group+'</span>'
+      +'<span class="status '+st.status+'">'+st.status+'</span>'
+      +'<span class="dur">'+dur+'</span></div>';
+    if(st.name==='implement'){
+      if(st.phases&&st.phases.length){
+        for(var pi=0;pi<st.phases.length;pi++){
+          var p=st.phases[pi];
+          var pIcon=p.status==='DONE'?'\u2713':p.status==='IN_PROGRESS'?'\u25b6':'\u25cb';
+          var gs='';
+          if(p.gates){for(var gk in p.gates){if(p.gates.hasOwnProperty(gk))gs+='<span class="gate '+(p.gates[gk]?'pass':'fail')+'">'+gk+':'+(p.gates[gk]?'\u2713':'\u2717')+'</span>';}}
+          var err=p.error_count?'<span class="err">\u26a0'+p.error_count+'</span>':'';
+          stagesHtml+='<div class="phase"><span class="'+p.status+'">'+pIcon+'</span> '+(p.name||'Phase')+' '+gs+' '+err+'</div>';
+        }
       }
+      stagesHtml+=renderWorkers(st);
     }
   }
-
-  const done = pipeline.filter(x=>x.status==='DONE').length;
-  const total = pipeline.filter(x=>x.status!=='SKIP').length;
-  const pct = total ? Math.round(done/total*100) : 0;
-
-  document.getElementById('app').innerHTML = `
-    <div class="progress-bar">${barHtml}</div>
-    <div class="grid">
-      <div class="card">
-        <h2>任务: ${task.name||'?'} <span class="session-id">${s.session_id?'#'+s.session_id:''}</span></h2>
-        <div style="color:var(--dim);font-size:12px;margin-bottom:12px">
-          Route: ${task.route||'?'} | Branch: ${task.branch||'-'} | Module: ${task.module||'-'}
-        </div>
-        ${stagesHtml}
-      </div>
-      <div class="card">
-        <h2>指标</h2>
-        <div class="metrics">
-          <div class="metric"><div class="val" style="color:var(--blue)">${pct}%</div><div class="label">进度 (${done}/${total})</div></div>
-          <div class="metric"><div class="val" style="color:var(--yellow)">${metrics.auto_continues||0}</div><div class="label">自动续跑</div></div>
-          <div class="metric"><div class="val" style="color:${(metrics.total_errors||0)>0?'var(--red)':'var(--green)'}">${metrics.total_errors||0}</div><div class="label">错误</div></div>
-        </div>
-        <div class="extra-metrics">
-          <div>自动修复: ${metrics.auto_fixed||0}</div>
-          <div>阻断: ${metrics.blocking||0}</div>
-          <div>重试上限: ${metrics.max_retries||3}</div>
-          <div>已完成: ${metrics.stages_completed||0}</div>
-        </div>
-      </div>
-    </div>`;
+  var done=pipeline.filter(function(x){return x.status==='DONE';}).length;
+  var total=pipeline.filter(function(x){return x.status!=='SKIP';}).length;
+  var pct=total?Math.round(done/total*100):0;
+  document.getElementById('app').innerHTML=
+    '<div class="progress-bar">'+barHtml+'</div>'
+    +'<div class="grid">'
+    +'<div class="card"><h2>\u4efb\u52a1: '+(task.name||'?')+' <span class="session-id">'+(s.session_id?'#'+s.session_id:'')+'</span></h2>'
+    +'<div style="color:var(--dim);font-size:12px;margin-bottom:12px">Route: '+(task.route||'?')+' | Branch: '+(task.branch||'-')+' | Module: '+(task.module||'-')+'</div>'
+    +stagesHtml+'</div>'
+    +'<div class="card"><h2>\u6307\u6807</h2>'
+    +'<div class="metrics">'
+    +'<div class="metric"><div class="val" style="color:var(--blue)">'+pct+'%</div><div class="label">\u8fdb\u5ea6 ('+done+'/'+total+')</div></div>'
+    +'<div class="metric"><div class="val" style="color:var(--yellow)">'+(metrics.auto_continues||0)+'</div><div class="label">\u81ea\u52a8\u7eed\u8dd1</div></div>'
+    +'<div class="metric"><div class="val" style="color:'+((metrics.total_errors||0)>0?'var(--red)':'var(--green)')+'">'+(metrics.total_errors||0)+'</div><div class="label">\u9519\u8bef</div></div>'
+    +'</div>'
+    +'<div class="extra-metrics">'
+    +'<div>\u81ea\u52a8\u4fee\u590d: '+(metrics.auto_fixed||0)+'</div>'
+    +'<div>\u963b\u65ad: '+(metrics.blocking||0)+'</div>'
+    +'<div>\u91cd\u8bd5\u4e0a\u9650: '+(metrics.max_retries||3)+'</div>'
+    +'<div>\u5df2\u5b8c\u6210: '+(metrics.stages_completed||0)+'</div>'
+    +'</div></div></div>';
 }
-function calcDur(st) {
-  if (!st.started_at) return '';
-  const end = st.completed_at ? new Date(st.completed_at) : new Date();
-  const d = (end - new Date(st.started_at)) / 1000;
-  if (d < 0) return '';
-  return d > 3600 ? Math.floor(d/3600)+'h'+('0'+Math.floor(d%3600/60)).slice(-2)+'m'
-       : d > 60 ? Math.floor(d/60)+'m'+('0'+Math.floor(d%60)).slice(-2)+'s'
-       : Math.floor(d)+'s';
+
+function renderWorkers(implStage){
+  var mode=implStage.mode||'serial',phases=implStage.phases||[],workers=implStage.workers||[];
+  if(mode==='serial'&&!workers.length)return '';
+  var html='<div class="workers"><h3>Orchestrator <span class="mode-badge">'+mode+'</span></h3>';
+  var batches={};
+  for(var i=0;i<phases.length;i++){var b=phases[i].batch||0;if(!batches[b])batches[b]=[];batches[b].push(phases[i]);}
+  var batchKeys=Object.keys(batches).sort(function(a,b){return a-b;});
+  if(batchKeys.length>1){
+    for(var bi=0;bi<batchKeys.length;bi++){
+      var bk=batchKeys[bi],bp=batches[bk],allDone=bp.every(function(p){return p.status==='DONE';});
+      html+='<div class="batch-group" style="border-color:'+(allDone?'var(--green)':'var(--border)')+'"><div class="batch-label">Batch '+(parseInt(bk)+1)+' ('+bp.length+' phases'+(allDone?' \u2713':'')+')</div>';
+      for(var j=0;j<bp.length;j++){
+        var pi2=bp[j].status==='DONE'?'\u2713':bp[j].status==='IN_PROGRESS'?'\u25b6':'\u25cb';
+        html+='<div class="phase"><span class="'+bp[j].status+'">'+pi2+'</span> '+(bp[j].name||'Phase')+'</div>';
+      }
+      html+='</div>';
+    }
+  }
+  if(workers.length){
+    for(var wi=0;wi<workers.length;wi++){
+      var w=workers[wi],sc=w.status==='DONE'?'DONE':w.status==='FAILED'||w.status==='TIMEOUT'?'FAILED':'IN_PROGRESS';
+      html+='<div class="worker"><span class="w-id">'+(w.worker_id||'?')+'</span><span class="w-phase">'+(w.phase||'-')+'</span><span class="w-branch">'+(w.worktree_branch||'')+'</span><span class="w-status '+sc+'">'+w.status+'</span></div>';
+    }
+  }
+  return html+'</div>';
 }
-loadProjects();
-setInterval(refresh, 2000);
-setInterval(loadProjects, 10000);
+
+async function loadEvalHistory(){
+  try{var r=await fetch('/api/eval-history');if(!r.ok)return;evalData=await r.json();
+    if(evalData&&evalData.length>1){document.getElementById('eval-section').style.display='block';drawEvalChart();}
+  }catch(e){}
+}
+
+function drawEvalChart(){
+  if(!evalData||evalData.length<2)return;
+  var canvas=document.getElementById('eval-canvas'),rect=canvas.parentElement.getBoundingClientRect();
+  var dpr=window.devicePixelRatio||1,W=Math.floor(rect.width-32),H=200;
+  canvas.width=W*dpr;canvas.height=H*dpr;canvas.style.width=W+'px';canvas.style.height=H+'px';
+  var ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);
+  var pad={top:20,right:20,bottom:40,left:50},cw=W-pad.left-pad.right,ch=H-pad.top-pad.bottom,n=evalData.length;
+  ctx.fillStyle='#161b22';ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='#30363d';ctx.lineWidth=0.5;
+  for(var gi=0;gi<=4;gi++){var gy=pad.top+ch*gi/4;ctx.beginPath();ctx.moveTo(pad.left,gy);ctx.lineTo(pad.left+cw,gy);ctx.stroke();}
+  ctx.fillStyle='#8b949e';ctx.font='10px monospace';ctx.textAlign='right';
+  for(var yi=0;yi<=4;yi++){ctx.fillText((100-yi*25)+'%',pad.left-6,pad.top+ch*yi/4+3);}
+  ctx.textAlign='center';
+  var step=Math.max(1,Math.floor(n/8));
+  for(var xi=0;xi<n;xi+=step){ctx.fillText(evalData[xi].date.slice(5),pad.left+(xi/(n-1))*cw,H-pad.bottom+16);}
+  function drawLine(key,color){
+    ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();
+    for(var i=0;i<n;i++){var x=pad.left+(i/(n-1))*cw,y=pad.top+ch*(1-evalData[i][key]);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}
+    ctx.stroke();ctx.fillStyle=color;
+    for(var i2=0;i2<n;i2++){var x2=pad.left+(i2/(n-1))*cw,y2=pad.top+ch*(1-evalData[i2][key]);ctx.beginPath();ctx.arc(x2,y2,3,0,Math.PI*2);ctx.fill();}
+  }
+  drawLine('score','#58a6ff');drawLine('pass_rate','#3fb950');
+  if(n>0){var last=evalData[n-1],lx=Math.min(pad.left+cw+4,W-40);
+    ctx.fillStyle='#58a6ff';ctx.font='bold 11px monospace';ctx.textAlign='left';
+    ctx.fillText((last.score*100).toFixed(1),lx,pad.top+ch*(1-last.score)+4);
+    ctx.fillStyle='#3fb950';ctx.fillText((last.pass_rate*100).toFixed(1),lx,pad.top+ch*(1-last.pass_rate)+4);
+  }
+}
+
+function calcDur(st){
+  if(!st.started_at)return '';
+  var end=st.completed_at?new Date(st.completed_at):new Date(),d=(end-new Date(st.started_at))/1000;
+  if(d<0)return '';
+  return d>3600?Math.floor(d/3600)+'h'+('0'+Math.floor(d%3600/60)).slice(-2)+'m'
+       :d>60?Math.floor(d/60)+'m'+('0'+Math.floor(d%60)).slice(-2)+'s'
+       :Math.floor(d)+'s';
+}
+
+loadProjects().then(function(){startSSE();setTimeout(function(){if(connMode==='off')startPoll();},3000);});
+setInterval(loadProjects,10000);
+loadEvalHistory();
+window.addEventListener('resize',function(){if(evalData)drawEvalChart();});
 </script>
 </body>
 </html>"""
 
+def _scan_eval_results():
+    """扫描 eval/results/eval-*.json，返回按时间排序的评测历史"""
+    eval_dir = Path(__file__).resolve().parent.parent / "eval" / "results"
+    if not eval_dir.exists():
+        return []
+    history = []
+    for f in sorted(eval_dir.glob("eval-*.json")):
+        try:
+            # 部分旧文件可能包含非 UTF-8 字符（GBK 等），做 fallback
+            try:
+                raw = f.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                raw = f.read_text(encoding="utf-8", errors="replace")
+            data = json.loads(raw)
+            summary = data.get("summary", {})
+            ts = data.get("timestamp", "")
+            date_str = ts[:10] if ts else f.stem.replace("eval-", "")[:8]
+            if len(date_str) == 8 and "-" not in date_str:
+                date_str = date_str[:4] + "-" + date_str[4:6] + "-" + date_str[6:8]
+            total = summary.get("total_tests", 0)
+            passed = summary.get("total_pass", 0)
+            score = summary.get("weighted_score", 0)
+            history.append({
+                "date": date_str,
+                "score": round(score, 4),
+                "pass_count": passed,
+                "total": total,
+                "pass_rate": round(passed / total, 4) if total > 0 else 0,
+            })
+        except Exception:
+            pass
+    return history
+
+
+def _inject_workers_into_state(state, proj_path):
+    """将 workers 目录下的 worker 状态注入 implement 阶段的 state 中"""
+    if not state:
+        return state
+    workers_dir = Path(proj_path) / ".claude" / "workers" if proj_path else WORKERS_DIR
+    if not workers_dir.exists():
+        return state
+    workers = []
+    for f in sorted(workers_dir.glob("worker-*.json")):
+        try:
+            w = json.loads(f.read_text(encoding="utf-8"))
+            workers.append(w)
+        except Exception:
+            pass
+    if workers:
+        for s in state.get("pipeline", []):
+            if s["name"] == "implement":
+                s["workers"] = workers
+                break
+    return state
+
+
 def cmd_web_hud(args):
-    """启动多项目 Web HUD 面板"""
+    """启动多项目 Web HUD 面板（SSE 实时推送 + 轮询 fallback）"""
     from http.server import HTTPServer, BaseHTTPRequestHandler
     import urllib.parse
+    import threading
 
     port = args.port or WEB_HUD_PORT
 
@@ -937,15 +1168,87 @@ def cmd_web_hud(args):
                 proj_path = params.get("project", [None])[0]
                 state = self._load_project_state(proj_path)
                 if state:
+                    state = _inject_workers_into_state(state, proj_path)
                     self._json_response(state)
                 else:
                     self.send_response(404)
                     self.end_headers()
+
+            elif parsed.path == '/api/events':
+                # SSE 端点：检测 harness-state.json 的 mtime，变化时推送
+                params = urllib.parse.parse_qs(parsed.query)
+                proj_path = params.get("project", [None])[0]
+                self._handle_sse(proj_path)
+
+            elif parsed.path == '/api/eval-history':
+                history = _scan_eval_results()
+                self._json_response(history)
+
             else:
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
                 self.wfile.write(WEB_HUD_HTML.encode('utf-8'))
+
+        def _handle_sse(self, proj_path):
+            """Server-Sent Events：循环检测 mtime，变化时推送 state"""
+            if proj_path:
+                sf = Path(proj_path) / ".claude" / "harness-state.json"
+            else:
+                sf = STATE_FILE
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('Connection', 'keep-alive')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            last_mtime = 0.0
+            projects_mtime = 0.0
+            try:
+                while True:
+                    try:
+                        cur_mtime = sf.stat().st_mtime if sf.exists() else 0.0
+                    except OSError:
+                        cur_mtime = 0.0
+                    if cur_mtime > last_mtime:
+                        last_mtime = cur_mtime
+                        state = self._load_project_state(
+                            proj_path if proj_path else None
+                        )
+                        if state:
+                            state = _inject_workers_into_state(state, proj_path)
+                            payload = json.dumps(state, ensure_ascii=False)
+                            self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
+                            self.wfile.flush()
+                    # 每 10 秒推送一次项目列表
+                    now_ts = time.time()
+                    if now_ts - projects_mtime > 10:
+                        projects_mtime = now_ts
+                        projs = self._find_all_projects()
+                        payload = json.dumps(projs, ensure_ascii=False)
+                        self.wfile.write(f"event: projects\ndata: {payload}\n\n".encode("utf-8"))
+                        self.wfile.flush()
+                    time.sleep(0.5)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                pass
+
+        def _is_completed(self, state):
+            """判断任务是否已结束: current_stage 为空 或 无 PENDING/IN_PROGRESS 阶段"""
+            if not state.get("current_stage"):
+                return True
+            pipeline = state.get("pipeline", [])
+            return not any(s.get("status") in ("PENDING", "IN_PROGRESS") for s in pipeline)
+
+        def _project_info(self, proj_path, state):
+            return {
+                "path": str(proj_path),
+                "name": state.get("project", Path(proj_path).name),
+                "task": state.get("task", {}).get("name", ""),
+                "current_stage": state.get("current_stage", ""),
+                "session_id": state.get("session_id", ""),
+                "completed": self._is_completed(state),
+                "updated_at": state.get("updated_at", ""),
+            }
 
         def _find_all_projects(self):
             projects = []
@@ -959,13 +1262,7 @@ def cmd_web_hud(args):
                 if sf.exists():
                     try:
                         state = json.loads(sf.read_text(encoding="utf-8"))
-                        projects.append({
-                            "path": proj,
-                            "name": state.get("project", Path(proj).name),
-                            "task": state.get("task", {}).get("name", ""),
-                            "current_stage": state.get("current_stage", ""),
-                            "session_id": state.get("session_id", ""),
-                        })
+                        projects.append(self._project_info(proj, state))
                         seen.add(proj)
                     except Exception:
                         pass
@@ -977,19 +1274,18 @@ def cmd_web_hud(args):
                     if sf.exists():
                         try:
                             state = json.loads(sf.read_text(encoding="utf-8"))
-                            projects.append({
-                                "path": str(proj),
-                                "name": state.get("project", proj.name),
-                                "task": state.get("task", {}).get("name", ""),
-                                "current_stage": state.get("current_stage", ""),
-                                "session_id": state.get("session_id", ""),
-                            })
+                            projects.append(self._project_info(proj, state))
                         except Exception:
                             pass
             return projects
 
         def _load_project_state(self, proj_path):
             if proj_path:
+                # C4 修复: 白名单限制 — 只允许访问已注册的项目路径
+                allowed = {p.get("path", "") for p in self._find_all_projects()}
+                resolved = str(Path(proj_path).resolve())
+                if resolved not in {str(Path(a).resolve()) for a in allowed}:
+                    return None
                 sf = Path(proj_path) / ".claude" / "harness-state.json"
             else:
                 sf = STATE_FILE
@@ -1010,14 +1306,18 @@ def cmd_web_hud(args):
         def log_message(self, format, *a):
             pass
 
-    server = HTTPServer(('0.0.0.0', port), HUDHandler)
-    print(f"Dev Harness Web HUD: http://localhost:{port}")
-    print("多项目模式 | Ctrl+C 停止")
+    # 使用 ThreadingHTTPServer 以支持 SSE 长连接 + 并发请求
+    from http.server import ThreadingHTTPServer
+    bind_addr = getattr(args, 'bind', None) or '127.0.0.1'
+    server = ThreadingHTTPServer((bind_addr, port), HUDHandler)
+    server.daemon_threads = True
+    print(f"Dev Harness Web HUD: http://{bind_addr}:{port}")
+    print("SSE realtime + polling fallback | Ctrl+C stop")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         server.shutdown()
-        print("\nWeb HUD 已停止")
+        print("\nWeb HUD stopped")
 
 # ==================== Implement 模式检测 (C6 代码化) ====================
 
@@ -1032,7 +1332,7 @@ def parse_phases_from_plan_file(project_root):
         return []
     text = plan_files[0].read_text(encoding="utf-8")
     phases = []
-    pattern = r'^#{2,3}\s+(?:Phase|Task|阶段)\s*(\d+)\s*[：:.\-—]?\s*(.*?)$'
+    pattern = r'^#{2,3}\s+(?:Phase|PHASE|Task|TASK|阶段|第)\s*(\d+)\s*(?:阶段)?\s*[：:.\-—]?\s*(.*?)$'
     for m in re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE):
         num = int(m.group(1))
         name = m.group(2).strip() or f"Phase {num}"
@@ -1057,7 +1357,10 @@ def cmd_detect_mode(args):
                 s["mode"] = mode
                 break
 
-    load_and_update_state(updater)
+    result = load_and_update_state(updater)
+    if result is None:
+        print("ERROR: 无 harness 状态", file=sys.stderr)
+        sys.exit(1)
     print(json.dumps({
         "mode": mode,
         "phase_count": len(phases),
@@ -1082,7 +1385,7 @@ def cmd_analyze_deps(args):
     text = plan_files[0].read_text(encoding="utf-8")
 
     # 按 Phase 分割文本
-    phase_pattern = r'^#{2,3}\s+(?:Phase|Task|阶段)\s*(\d+)\s*[：:.\-—]?\s*(.*?)$'
+    phase_pattern = r'^#{2,3}\s+(?:Phase|PHASE|Task|TASK|阶段|第)\s*(\d+)\s*(?:阶段)?\s*[：:.\-—]?\s*(.*?)$'
     splits = list(re.finditer(phase_pattern, text, re.MULTILINE | re.IGNORECASE))
     if not splits:
         print(json.dumps({"error": "no phases found"}, ensure_ascii=False))
@@ -1167,10 +1470,12 @@ def cmd_worker_status(args):
             if w.get("status") == "IN_PROGRESS":
                 hb = w.get("heartbeat_at", "")
                 if hb:
-                    from datetime import timezone as tz
                     hb_dt = datetime.fromisoformat(hb.replace("Z", "+00:00"))
                     if (now_dt - hb_dt).total_seconds() > WORKER_TIMEOUT_SEC:
                         w["status"] = "TIMEOUT"
+                        # 写回文件持久化超时状态
+                        with FileLock(str(f) + ".lock", timeout=2):
+                            f.write_text(json.dumps(w, ensure_ascii=False, indent=2), encoding="utf-8")
             workers.append(w)
         except (json.JSONDecodeError, OSError):
             pass
@@ -1203,6 +1508,8 @@ def main():
     p_init = sub.add_parser("init")
     p_init.add_argument("task_name")
     p_init.add_argument("--route", default="C")
+    p_init.add_argument("--mode", default="pipeline", choices=["pipeline", "single", "conversation"])
+    p_init.add_argument("--skills", default="", help="single 模式下要执行的阶段（逗号分隔）")
     p_init.add_argument("--module", default="")
     p_init.add_argument("--branch", default="")
     p_init.add_argument("--session-id", dest="session_id", default="")
@@ -1215,7 +1522,7 @@ def main():
     p_upd.add_argument("stage")
     p_upd.add_argument("status")
     p_upd.add_argument("--phase", type=int, default=None)
-    p_upd.add_argument("--gate", nargs="*")
+    p_upd.add_argument("--gate", action="append", default=[])
     p_upd.add_argument("--error", action="store_true")
     p_upd.add_argument("--auto-fixed", action="store_true")
 
@@ -1240,6 +1547,7 @@ def main():
     p_web = sub.add_parser("web-hud")
     p_web.add_argument("--port", type=int, default=WEB_HUD_PORT)
     p_web.add_argument("--project", default=None, help="指定项目目录（默认从 cwd 向上查找 .git）")
+    p_web.add_argument("--bind", default="127.0.0.1", help="绑定地址（默认 127.0.0.1，需外部访问时用 0.0.0.0）")
 
     # worker-report
     p_wr = sub.add_parser("worker-report")

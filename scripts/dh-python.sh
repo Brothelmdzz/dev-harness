@@ -8,7 +8,9 @@
 #   3. fallback 到系统 python（降级）
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+
+# 兼容 Claude Code / Cursor IDE — 优先 CLAUDE_PLUGIN_ROOT，其次 CURSOR_PLUGIN_ROOT
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
 VENV_DIR="$PLUGIN_ROOT/.venv"
 
 # 按平台查找 venv python

@@ -41,15 +41,33 @@ bash scripts/worktree.sh cleanup
 bash scripts/scaffold.sh <skill-name>                    # 创建 L1 Skill
 bash scripts/scaffold.sh --config springboot             # 复制项目配置模板
 
+# 通知
+python scripts/notify.py --title "Done" --message "完成" --level success
+python scripts/notify.py --title "Done" --message "完成" --lark  # 同时飞书通知
+
+# 团队看板
+python scripts/team-report.py                 # Markdown 输出到 stdout
+python scripts/team-report.py --json          # JSON 格式
+python scripts/team-report.py -o report.md    # 保存到文件
+
+# Skill 自进化建议（实验性）
+python scripts/skill-suggest.py               # 分析 eval 历史
+python scripts/skill-suggest.py --json        # JSON 格式
+python scripts/skill-suggest.py --threshold 70 --consecutive 5  # 自定义阈值
+
 # 安装验证
 bash scripts/setup.sh
+
+# 版本号同步（发布时一键同步所有元数据文件）
+bash scripts/sync-plugin-meta.sh          # 从 .claude-plugin/plugin.json 读取
+bash scripts/sync-plugin-meta.sh 3.4.0    # 指定版本号
 ```
 
 ## 架构
 
 ### 路径机制
 
-插件安装后，所有脚本通过 Claude Code 官方环境变量 `${CLAUDE_PLUGIN_ROOT}` 定位。该变量在 Skill/Agent/Hook 内容中自动替换，在子进程中作为环境变量导出。
+插件安装后，所有脚本通过 Claude Code 官方环境变量 `${CLAUDE_PLUGIN_ROOT}` 定位。该变量在 Skill/Agent/Hook 内容中自动替换，在子进程中作为环境变量导出。Cursor IDE 使用 `${CURSOR_PLUGIN_ROOT}`，`session-init.sh` 和 `dh-python.sh` 会自动将其映射为 `CLAUDE_PLUGIN_ROOT`，下游脚本无需感知差异。
 
 **Hook 注册机制**：
 - `hooks/hooks.json` 注册 3 个 Hook：SessionStart（环境检测）、Stop（六道防线）、PostToolUse（phases 自动注册）
@@ -78,9 +96,17 @@ bash scripts/setup.sh
 
 `defaults/skill-map.yml` 定义每个阶段的别名候选列表，`scripts/skill-resolver.py` 按层级逐一尝试匹配。角色 profile (backend/frontend/product/qa) 可额外注入 profile 专用别名。
 
+### 运行模式（v3.3）
+
+| 模式 | 语义 | state 行为 | stop-hook 行为 | 入口 |
+|------|------|-----------|---------------|------|
+| **pipeline** | 多阶段全流程 | 完整 pipeline 状态 | 六道防线 + 阶段推进 | `/dev` |
+| **single** | 单个 Skill 执行 | 仅记录指定阶段 | 只检查指定阶段完成 | `/fix` `/test` `/audit` `/review` |
+| **conversation** | 纯对话问答 | 创建但 stop-hook 不介入 | 直接放行 | `/ask` |
+
 ### Pipeline 路线
 
-路线决定跳过哪���阶段（`scripts/harness.py` 中的 `ROUTE_STAGES`）���
+路线决定跳过哪些阶段（`scripts/harness.py` 中的 `ROUTE_STAGES`）：
 - **B**: 全流程（含 research + prd）
 - **A**: 跳 research
 - **C**: 跳 research + prd（最常用）
@@ -105,7 +131,22 @@ bash scripts/setup.sh
 
 ### 状态文件
 
-`.claude/harness-state.json` 是整个流水线的唯一状态源。关键字段：`session_id`, `current_stage`, `pipeline[].status` (PENDING/IN_PROGRESS/DONE/SKIP/FAILED), `metrics`, `worktree`。
+`.claude/harness-state.json` 是整个流水线的唯一状态源。关键字段：`session_id`, `mode` (pipeline/single/conversation), `current_stage`, `pipeline[].status` (PENDING/IN_PROGRESS/DONE/SKIP/FAILED/BLOCKED), `metrics`, `worktree`。
+
+### .claude/ 子目录结构
+
+| 路径 | 职责 | 产出阶段 |
+|------|------|---------|
+| `harness-state.json` | 流水线唯一状态源 | init |
+| `dev-config.yml` | 项目配置覆盖（门禁命令、通知等） | 手动创建 |
+| `skills/` | L1 项目专用 Skill | 手动创建 |
+| `commands/` | L1 自定义命令 | 手动创建 |
+| `plans/` | 实施计划文档 | plan 阶段 |
+| `researches/` | 代码库研究报告 | research 阶段 |
+| `project-design/` | PRD ��求文档 | prd 阶段 |
+| `reports/` | 审计/测试/评审报告 | audit/test/review |
+| `workers/` | Orchestrator Worker 状态文件 | implement (并行模式) |
+| `harness-eval.jsonl` | 评测事件日志 | 运行时自动 |
 
 ### 12 个 Agent
 
@@ -135,14 +176,16 @@ SKILL.md 指引是"概率性"的（Claude 可能跳过），但 phases 注册是
 | 目录 | 职责 |
 |------|------|
 | `skills/dev/` | `/dev` 入口编排器 SKILL.md |
+| `skills/fix/` `test-skill/` `audit-skill/` `review-skill/` `ask/` | 轻量入口 Skill（single/conversation 模式） |
 | `skills/generic-*/` | L3 内置 Skill（audit/implement/research/review/test/docs/wiki 等） |
-| `scripts/` | Python/Shell 工具脚本（状态管理、Skill 解析、技术栈检测、worktree、Web HUD） |
+| `scripts/` | Python/Shell 工具脚本（状态管理、Skill 解析、技术栈检测、worktree、Web HUD、通知、团队看板、Skill 建议） |
 | `hooks/` | stop-hook.py（续跑）+ plan-watcher.py（phases 自动注册）+ hooks.json + stop-hook-wrapper.py |
 | `agents/` | 12 个 Agent 的 Markdown 定义文件 |
 | `defaults/` | pipeline.yml（阶段定义）+ skill-map.yml（别名映射） |
 | `templates/` | 项目配置模板（springboot/python/nextjs/monorepo/minimal） |
 | `eval/` | 评测框架：eval-runner.py + scenarios/ + results/ |
 | `.claude-plugin/` | plugin.json（插件元数据）+ marketplace.json |
+| `.cursor-plugin/` | Cursor IDE 适配：plugin.json + marketplace.json + hooks.json（CURSOR_PLUGIN_ROOT 版） |
 | `docs/` | 改进方案、竞品研究、贡献指南等 |
 
 ## 注意事项
@@ -150,5 +193,10 @@ SKILL.md 指引是"概率性"的（Claude 可能跳过），但 phases 注册是
 - `scripts/harness.py` 中的 `find_project_root()` 和 `hooks/stop-hook.py` 各自有独立的项目根发现逻辑（后者需处理 Hook cwd 可能不在项目目录的情况）
 - Skill 目录中只有 SKILL.md 文件，Skill 的实际执行逻辑由 Claude Code 解释 Markdown 指令完成
 - 所有 Skill 中的脚本引用统一使用 `${CLAUDE_PLUGIN_ROOT}/scripts/xxx`
+- Cursor 适配：`.cursor-plugin/hooks.json` 使用 `${CURSOR_PLUGIN_ROOT}`，`session-init.sh` 自动导出 `CLAUDE_PLUGIN_ROOT` 别名
+- 版本发布时运行 `bash scripts/sync-plugin-meta.sh` 一键同步所有元数据文件
 - `scripts/find-dh-home.sh` 仅作为 fallback 发现机制保留
 - Windows 环境下 `python3` 可能是应用商店存根，脚本应使用 `python` 而非 `python3`
+- `scripts/notify.py` — 桌面通知 + 飞书 Webhook；`harness.py` 的 `cmd_update` 在 pipeline 全部完成或 FAILED 时自动调用
+- `scripts/team-report.py` — 团队看板，扫描中央 session 索引汇总所有项目 pipeline 状态，支持 Markdown/JSON 输出
+- `scripts/skill-suggest.py` — 实验性 Skill 自进化建议，分析 eval/results/ 历史找出持续低分维度

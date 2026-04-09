@@ -1,6 +1,6 @@
 {
   "name": "dev-harness-marketplace",
-  "version": "1.0.0",
+  "version": "3.3.0",
   "owner": {
     "name": "brothelmdzz"
   },
@@ -8,8 +8,8 @@
     {
       "name": "dev-harness",
       "source": "./",
-      "description": "Harness Engineering development pipeline. Three-layer skill resolution, auto-loop iteration, visual HUD, 12 specialized agents.",
-      "version": "3.2.4"
+      "description": "Dev Harness - 自驱动开发流水线 | 命令: /dev (全流程) /fix (快速修复) /test (运行测试) /audit (代码审计) /review (代码审查) /ask (对话问答) | 特性: 三层 Skill 解析 + 多模式 + Web HUD + 12 专用 Agent",
+      "version": "3.3.0"
     }
   ]
 }
