@@ -67,6 +67,10 @@ METRICS = {
         "description": "Stop hook phases 为空时的 plan 文件 fallback 解析",
         "weight": 2.0,
     },
+    "v33_features": {
+        "description": "v3.3 新特性: 多模式/gate 大小写/worker timeout/幂等/lightweight skills",
+        "weight": 2.0,  # 核心新特性, 权重加倍
+    },
 }
 
 HOOK_SCRIPT = Path(__file__).parent.parent / "hooks" / "stop-hook.py"
@@ -831,6 +835,172 @@ def test_phases_fallback():
     shutil.rmtree(tmpdir2, ignore_errors=True)
     return {"metric": "phases_fallback", "results": results}
 
+def test_v33_features():
+    """测试 v3.3 新增特性: 多模式架构 + gate case-insensitive + worker timeout 写回 + lightweight skills"""
+    import shutil, tempfile
+    results = []
+
+    # 1. single 模式 init 只激活指定阶段
+    tmpdir = _make_test_env()
+    out, rc = run_cmd(
+        f"python {HARNESS_SCRIPT} init single-test --mode single --skills implement,test",
+        cwd=tmpdir
+    )
+    state = _read_state(tmpdir)
+    active = [s["name"] for s in state["pipeline"] if s["status"] == "PENDING"]
+    skipped = [s["name"] for s in state["pipeline"] if s["status"] == "SKIP"]
+    results.append({
+        "test": "single_mode_init",
+        "pass": state.get("mode") == "single" and set(active) == {"implement", "test"} and "plan" in skipped,
+        "detail": f"mode={state.get('mode')}, active={active}"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 2. single 模式 stop-hook 正确推进
+    tmpdir = _make_test_env()
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    state = {
+        "version": "1.1", "session_id": "sm-test", "mode": "single", "project": "test",
+        "task": {"name": "t", "route": "C-lite", "branch": "", "module": "", "started_at": now},
+        "pipeline": [
+            {"name": "plan", "status": "SKIP"},
+            {"name": "implement", "status": "DONE", "phases": []},
+            {"name": "test", "status": "PENDING"},
+            {"name": "remember", "status": "SKIP"},
+        ],
+        "current_stage": "implement", "paused": False,
+        "metrics": {"max_retries": 3, "auto_continues": 0, "stages_completed": 1},
+    }
+    _write_state(tmpdir, state)
+    out, rc = _run_hook(tmpdir, {"session_id": "sm-test"})
+    reloaded = _read_state(tmpdir)
+    results.append({
+        "test": "single_mode_advances",
+        "pass": "block" in out and reloaded.get("current_stage") == "test",
+        "detail": f"current_stage={reloaded.get('current_stage')}, output_has_block={'block' in out}"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 3. conversation 模式 stop-hook 不介入
+    tmpdir = _make_test_env()
+    state = {
+        "version": "1.1", "session_id": "conv-test", "mode": "conversation", "project": "test",
+        "task": {"name": "t", "route": "C", "branch": "", "module": "", "started_at": now},
+        "pipeline": [{"name": "plan", "status": "PENDING"}],
+        "current_stage": "plan", "paused": False,
+        "metrics": {"max_retries": 3, "auto_continues": 0, "stages_completed": 0},
+    }
+    _write_state(tmpdir, state)
+    out, rc = _run_hook(tmpdir, {"session_id": "conv-test"})
+    results.append({
+        "test": "conversation_mode_no_intervene",
+        "pass": "block" not in out,
+        "detail": f"output='{out[:50]}'"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 4. Gate 值大小写不敏感 (PASS/Pass/pass 都识别)
+    tmpdir = _make_test_env()
+    out, rc = run_cmd(f"python {HARNESS_SCRIPT} init gate-test --route C-lite", cwd=tmpdir)
+    state = _read_state(tmpdir)
+    for p in state["pipeline"]:
+        if p["name"] == "implement":
+            p["status"] = "IN_PROGRESS"
+            p["phases"] = [{"name": "Phase 1", "status": "PENDING", "error_count": 0}]
+    _write_state(tmpdir, state)
+    # 多个 --gate 应该累加, 大小写不敏感
+    out, rc = run_cmd(
+        f'python {HARNESS_SCRIPT} update implement IN_PROGRESS --phase 1 --gate build=PASS --gate test=Pass --gate lint=pass',
+        cwd=tmpdir
+    )
+    reloaded = _read_state(tmpdir)
+    gates = next((p["phases"][0].get("gates", {}) for p in reloaded["pipeline"] if p["name"] == "implement"), {})
+    results.append({
+        "test": "gate_case_insensitive_and_multi",
+        "pass": gates.get("build") is True and gates.get("test") is True and gates.get("lint") is True,
+        "detail": f"gates={gates}"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 5. Worker timeout 写回文件 (HIGH bug fix)
+    tmpdir = _make_test_env()
+    workers_dir = Path(tmpdir) / ".claude" / "workers"
+    workers_dir.mkdir(parents=True, exist_ok=True)
+    # 创建一个心跳超过 10 分钟的 IN_PROGRESS worker
+    old_hb = "2020-01-01T00:00:00Z"  # 古老时间戳
+    worker_data = {
+        "worker_id": "w1", "phase": "1", "status": "IN_PROGRESS",
+        "heartbeat_at": old_hb, "worktree_branch": "feat-x"
+    }
+    (workers_dir / "worker-w1.json").write_text(json.dumps(worker_data), encoding="utf-8")
+    out, rc = run_cmd(f"python {HARNESS_SCRIPT} worker-status", cwd=tmpdir)
+    # 文件应被改写为 TIMEOUT
+    after = json.loads((workers_dir / "worker-w1.json").read_text(encoding="utf-8"))
+    results.append({
+        "test": "worker_timeout_persisted",
+        "pass": after.get("status") == "TIMEOUT",
+        "detail": f"file_status={after.get('status')}"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 6. stages_completed 幂等保护 (重复 update DONE 不应重复计数)
+    tmpdir = _make_test_env()
+    out, rc = run_cmd(f"python {HARNESS_SCRIPT} init idemp-test --route C-lite", cwd=tmpdir)
+    state = _read_state(tmpdir)
+    for p in state["pipeline"]:
+        if p["name"] == "implement":
+            p["status"] = "IN_PROGRESS"
+    _write_state(tmpdir, state)
+    # 第一次 update DONE
+    run_cmd(f"python {HARNESS_SCRIPT} update implement DONE", cwd=tmpdir)
+    state1 = _read_state(tmpdir)
+    first_count = state1["metrics"]["stages_completed"]
+    # 第二次 update DONE (重复)
+    run_cmd(f"python {HARNESS_SCRIPT} update implement DONE", cwd=tmpdir)
+    state2 = _read_state(tmpdir)
+    second_count = state2["metrics"]["stages_completed"]
+    results.append({
+        "test": "stages_completed_idempotent",
+        "pass": first_count == second_count,
+        "detail": f"first={first_count}, second={second_count}"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # 7. 5 个新轻量入口 Skill 目录存在且有 SKILL.md
+    skills_dir = Path(__file__).parent.parent / "skills"
+    lightweight = ["fix", "test-skill", "audit-skill", "review-skill", "ask"]
+    missing = [s for s in lightweight if not (skills_dir / s / "SKILL.md").exists()]
+    results.append({
+        "test": "lightweight_skills_present",
+        "pass": len(missing) == 0,
+        "detail": f"missing={missing}" if missing else "all 5 present"
+    })
+
+    # 8. detect-mode 正确识别 orchestrator (>3 phases)
+    tmpdir = _make_test_env()
+    out, rc = run_cmd(f"python {HARNESS_SCRIPT} init dm-test --route C", cwd=tmpdir)
+    plans_dir = Path(tmpdir) / ".claude" / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    (plans_dir / "plan.md").write_text(
+        "# Plan\n\n## Phase 1: A\n## Phase 2: B\n## Phase 3: C\n## Phase 4: D\n",
+        encoding="utf-8"
+    )
+    out, rc = run_cmd(f"python {HARNESS_SCRIPT} detect-mode", cwd=tmpdir)
+    try:
+        parsed = json.loads(out)
+        mode_correct = parsed.get("mode") == "orchestrator" and parsed.get("phase_count") == 4
+    except Exception:
+        mode_correct = False
+    results.append({
+        "test": "detect_mode_orchestrator",
+        "pass": mode_correct,
+        "detail": f"output={out[:100]}"
+    })
+    shutil.rmtree(tmpdir, ignore_errors=True)
+
+    return {"metric": "v33_features", "results": results}
+
 ALL_TESTS = {
     "skill_resolution": test_skill_resolution,
     "state_management": test_state_management,
@@ -844,6 +1014,7 @@ ALL_TESTS = {
     "worker_management": test_worker_management,
     "plan_watcher": test_plan_watcher,
     "phases_fallback": test_phases_fallback,
+    "v33_features": test_v33_features,
 }
 
 def run_scenario(name):
