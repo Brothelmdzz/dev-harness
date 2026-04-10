@@ -1,10 +1,9 @@
 {
   "_comment": [
     "Cursor IDE 适配版 hooks.json",
-    "CURSOR_PLUGIN_ROOT 是 Cursor 插件系统的等价变量，",
-    "功能上等同于 Claude Code 的 CLAUDE_PLUGIN_ROOT，",
-    "两者都指向插件安装根目录。",
-    "如需同步修改，请同时更新 hooks/hooks.json（Claude Code 原版）。"
+    "所有 command 通过 python -c 启动, 从环境变量读 CURSOR_PLUGIN_ROOT 或 CLAUDE_PLUGIN_ROOT 原始值,",
+    "用 pathlib.as_posix() 规范化路径, 绕过 WSL/Git Bash 反斜杠转义问题。",
+    "如需同步修改, 请同时更新 hooks/hooks.json (Claude Code 原版)。"
   ],
   "hooks": {
     "SessionStart": [
@@ -13,7 +12,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CURSOR_PLUGIN_ROOT}/hooks/session-init.sh\"",
+            "command": "python -c \"import os,sys,subprocess,pathlib;r=os.environ.get('CURSOR_PLUGIN_ROOT') or os.environ.get('CLAUDE_PLUGIN_ROOT');sys.exit(0) if not r else None;root=pathlib.Path(r);venv=root/'.venv'/('Scripts/python.exe' if os.name=='nt' else 'bin/python');py=str(venv) if venv.exists() else sys.executable;hook=root/'hooks'/'session-init.py';subprocess.run([py,str(hook)]) if hook.exists() else None\"",
             "timeout": 3000
           }
         ]
@@ -25,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CURSOR_PLUGIN_ROOT}/scripts/dh-python.sh\" \"${CURSOR_PLUGIN_ROOT}/hooks/stop-hook.py\"",
+            "command": "python -c \"import os,sys,subprocess,pathlib;r=os.environ.get('CURSOR_PLUGIN_ROOT') or os.environ.get('CLAUDE_PLUGIN_ROOT');sys.exit(0) if not r else None;root=pathlib.Path(r);venv=root/'.venv'/('Scripts/python.exe' if os.name=='nt' else 'bin/python');py=str(venv) if venv.exists() else sys.executable;hook=root/'hooks'/'stop-hook.py';subprocess.run([py,str(hook)],input=sys.stdin.buffer.read() if not sys.stdin.isatty() else None) if hook.exists() else None\"",
             "timeout": 5000
           }
         ]
@@ -37,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"${CURSOR_PLUGIN_ROOT}/scripts/dh-python.sh\" \"${CURSOR_PLUGIN_ROOT}/hooks/plan-watcher.py\"",
+            "command": "python -c \"import os,sys,subprocess,pathlib;r=os.environ.get('CURSOR_PLUGIN_ROOT') or os.environ.get('CLAUDE_PLUGIN_ROOT');sys.exit(0) if not r else None;root=pathlib.Path(r);venv=root/'.venv'/('Scripts/python.exe' if os.name=='nt' else 'bin/python');py=str(venv) if venv.exists() else sys.executable;hook=root/'hooks'/'plan-watcher.py';subprocess.run([py,str(hook)],input=sys.stdin.buffer.read() if not sys.stdin.isatty() else None) if hook.exists() else None\"",
             "timeout": 3000
           }
         ]
