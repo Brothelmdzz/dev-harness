@@ -102,7 +102,7 @@ for f in "${REQUIRED_FILES[@]}"; do
     fi
 done
 
-# ==================== 5. Hook 注册状态（只读检查） ====================
+# ==================== 5. Hook 注册状态（只读检查 + 清理旧遗留） ====================
 
 echo ""
 CLAUDE_DIR="$HOME/.claude"
@@ -110,13 +110,43 @@ if [[ "$OS" == "Windows_NT" || "$OSTYPE" == msys* || "$OSTYPE" == cygwin* ]]; th
     CLAUDE_DIR="$(cygpath -u "$USERPROFILE")/.claude"
 fi
 SETTINGS="$CLAUDE_DIR/settings.json"
+LEGACY_STOP="$CLAUDE_DIR/hooks/dev-harness-stop.py"
+
+# 清理 v3.2 之前留下的遗留注册（Windows 下使用 bash 风格路径导致 Cursor 无法识别）
+if [ -f "$SETTINGS" ] && grep -q "dev-harness-stop" "$SETTINGS" 2>/dev/null; then
+    echo "[CLEAN] 检测到旧版 Stop Hook 遗留注册，正在清理..."
+    bash "$DH_PYTHON" -c "
+import json
+from pathlib import Path
+f = Path('$SETTINGS')
+data = json.loads(f.read_text(encoding='utf-8'))
+hooks = data.get('hooks', {})
+if 'Stop' in hooks:
+    cleaned = []
+    removed = 0
+    for block in hooks['Stop']:
+        kept = [h for h in block.get('hooks', []) if 'dev-harness-stop' not in h.get('command', '')]
+        removed += len(block.get('hooks', [])) - len(kept)
+        if kept:
+            block['hooks'] = kept
+            cleaned.append(block)
+    if cleaned:
+        hooks['Stop'] = cleaned
+    else:
+        del hooks['Stop']
+    f.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
+    print(f'  [OK] 已移除 {removed} 个遗留 Stop Hook 注册')
+" 2>/dev/null || echo "  [WARN] 清理失败，请手动检查 $SETTINGS"
+fi
+
+# 清理遗留的 dev-harness-stop.py 脚本文件（v3.3+ 不再需要, 插件级 hooks.json 已覆盖）
+if [ -f "$LEGACY_STOP" ]; then
+    rm -f "$LEGACY_STOP"
+    echo "[CLEAN] 已移除遗留脚本 $LEGACY_STOP"
+fi
 
 if [ -f "$SETTINGS" ]; then
-    if grep -q "stop-hook\|dev-harness-stop" "$SETTINGS" 2>/dev/null; then
-        echo "[OK] Stop Hook 已注册"
-    else
-        echo "[INFO] Stop Hook 将在新会话启动时自动注册（通过 hooks/hooks.json）"
-    fi
+    echo "[OK] Stop Hook 由插件 hooks/hooks.json 自动注册（无需用户级配置）"
 fi
 
 # ==================== 6. 评测（可选） ====================
