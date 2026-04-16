@@ -1,16 +1,16 @@
-# Next.js 项目配置模板
+# Rust 项目配置模板
 # 复制到项目根目录 .claude/dev-config.yml 后按需修改
 
-project: my-nextjs-app
-tech_stack: nextjs
+project: my-rust-project
+tech_stack: rust
 
 gates:
-  build: "npm run build"
-  test: "npm test"
-  lint: "npm run lint"
+  build: "cargo build"
+  test: "cargo test"
+  lint: "cargo clippy -- -D warnings"
 
 tdd: false
-default_profile: frontend
+default_profile: backend
 
 permissions:
   auto_fix: true
@@ -21,7 +21,6 @@ permissions:
 
 # 防线参数（可选，覆盖默认值）
 # limits:
-#   stage_timeout: 1800
+#   stage_timeout: 2400
 #   max_duration: 7200
 #   max_retries: 3
-#   max_auto_phases: 10

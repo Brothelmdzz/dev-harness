@@ -9,21 +9,16 @@ import json, sys, os, re
 from pathlib import Path
 from datetime import datetime, timezone
 
+# 让 hooks 能 import scripts/lib/
+_plugin_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_plugin_root / "scripts"))
+
+from lib.plan import parse_phases
+
 def parse_phases_from_plan(plan_path):
-    """从 plan 文件解析 Phase 列表"""
+    """从 plan 文件解析 Phase 列表（委托给 lib.plan）"""
     text = Path(plan_path).read_text(encoding="utf-8")
-    phases = []
-    # 匹配: ## Phase N / ### Task N / ## 阶段 N（支持中英文冒号和各种分隔符）
-    pattern = r'^#{2,3}\s+(?:Phase|PHASE|Task|TASK|阶段|第)\s*(\d+)\s*(?:阶段)?\s*[：:.\-—]?\s*(.*?)$'
-    for m in re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE):
-        num = int(m.group(1))
-        name = m.group(2).strip() or f"Phase {num}"
-        phases.append({
-            "name": f"Phase {num}: {name}" if name != f"Phase {num}" else name,
-            "status": "PENDING",
-            "error_count": 0,
-        })
-    return phases
+    return parse_phases(text)
 
 def main():
     try:
@@ -69,15 +64,8 @@ def main():
         sys.exit(0)
 
     # 更新 state 中的 implement phases（filelock 保护）
-    try:
-        from filelock import FileLock
-        lock = FileLock(str(state_file) + ".lock", timeout=5)
-    except ImportError:
-        # filelock 未安装时降级为无操作锁（与 harness.py 一致）
-        class _NoopLock:
-            def __enter__(self): return self
-            def __exit__(self, *a): pass
-        lock = _NoopLock()
+    from lib.compat import FileLock
+    lock = FileLock(str(state_file) + ".lock", timeout=5)
 
     with lock:
         try:
@@ -98,7 +86,9 @@ def main():
                 break
 
         state["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_file = state_file.with_suffix(".json.tmp")
+        tmp_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(str(tmp_file), str(state_file))
 
 if __name__ == "__main__":
     main()

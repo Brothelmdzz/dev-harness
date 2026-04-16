@@ -14,7 +14,7 @@ description: 通用代码审查 — 三路并行审查（code-reviewer + securit
 
 ```bash
 # 如果在 git 仓库中
-git diff master...HEAD > /tmp/dh-review-diff.txt
+git diff $(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's|origin/||' || echo master)...HEAD > /tmp/dh-review-diff.txt
 # 或者从最近几次 commit
 git log --oneline -10
 ```

@@ -32,7 +32,7 @@ description: Wiki 知识库自动同步 — 在代码变更交付后将功能说
 | 配置变更 | 更新配置说明 + 部署文档 |
 | 纯内部重构 | **不同步** |
 
-用 `git diff --name-only master...HEAD` 分析改动文件，判断变更类型。
+用 `git diff --name-only $(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's|origin/||' || echo master)...HEAD` 分析改动文件，判断变更类型。
 
 ## 第二步: 确定 Wiki 工具
 

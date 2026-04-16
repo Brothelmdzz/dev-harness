@@ -109,13 +109,7 @@ def resolve_all(project_dir=None, user_home=None, plugin_dir=None, profile=None)
         result[stage] = resolve(stage, project_dir, user_home, plugin_dir, profile)
     return result
 
-def find_project_root():
-    p = Path.cwd()
-    while p != p.parent:
-        if (p / ".git").exists():
-            return p
-        p = p.parent
-    return Path.cwd()
+from lib.project import find_project_root
 
 # ==================== CLI ====================
 

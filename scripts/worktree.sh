@@ -25,16 +25,16 @@ is_git_repo() {
 get_worktree_info() {
     if [ -f "$STATE_FILE" ]; then
         python -c "
-import json
+import json, sys
 try:
-    s = json.load(open('$STATE_FILE', encoding='utf-8'))
+    s = json.load(open(sys.argv[1], encoding='utf-8'))
     wt = s.get('worktree', {})
     print(wt.get('path', ''))
     print(wt.get('branch', ''))
-except:
+except Exception:
     print('')
     print('')
-" 2>/dev/null
+" "$STATE_FILE" 2>/dev/null
     fi
 }
 
@@ -43,28 +43,30 @@ save_worktree_info() {
     local wt_branch="$2"
     if [ -f "$STATE_FILE" ]; then
         python -c "
-import json
+import json, sys
 try:
-    s = json.load(open('$STATE_FILE', encoding='utf-8'))
-    s['worktree'] = {'path': '$wt_path', 'branch': '$wt_branch'}
-    json.dump(s, open('$STATE_FILE', 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+    sf, wp, wb = sys.argv[1], sys.argv[2], sys.argv[3]
+    s = json.load(open(sf, encoding='utf-8'))
+    s['worktree'] = {'path': wp, 'branch': wb}
+    json.dump(s, open(sf, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
 except Exception as e:
     print(f'WARN: {e}')
-" 2>/dev/null
+" "$STATE_FILE" "$wt_path" "$wt_branch" 2>/dev/null
     fi
 }
 
 clear_worktree_info() {
     if [ -f "$STATE_FILE" ]; then
         python -c "
-import json
+import json, sys
 try:
-    s = json.load(open('$STATE_FILE', encoding='utf-8'))
+    sf = sys.argv[1]
+    s = json.load(open(sf, encoding='utf-8'))
     s.pop('worktree', None)
-    json.dump(s, open('$STATE_FILE', 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
-except:
+    json.dump(s, open(sf, 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+except Exception:
     pass
-" 2>/dev/null
+" "$STATE_FILE" 2>/dev/null
     fi
 }
 

@@ -7,7 +7,7 @@ tech_stack: spring-boot
 gates:
   build: "./gradlew build -x test"
   test: "./gradlew test"
-  lint: ""
+  # lint: "./gradlew checkstyleMain"  # 按需取消注释
 
 # Skill 覆盖（取消注释并填写你的 L1 Skill 名）
 # skill_overrides:
@@ -20,11 +20,15 @@ default_profile: backend
 permissions:
   auto_fix: true
   auto_continue: true
-  max_auto_phases: 10
-  max_duration: 7200
   require_approval:
     - prd
     - plan
+
+# 防线参数（可选，覆盖默认值）
+# limits:
+#   stage_timeout: 1800
+#   max_duration: 7200
+#   max_retries: 3
 
 # wiki:
 #   type: confluence

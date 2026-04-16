@@ -15,8 +15,13 @@ default_profile: backend
 permissions:
   auto_fix: true
   auto_continue: true
-  max_auto_phases: 10
-  max_duration: 7200
   require_approval:
     - prd
     - plan
+
+# 防线参数（可选，覆盖默认值）
+# limits:
+#   stage_timeout: 1800
+#   max_duration: 7200
+#   max_retries: 3
+#   max_auto_phases: 10

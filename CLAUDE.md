@@ -179,6 +179,7 @@ SKILL.md 指引是"概率性"的（Claude 可能跳过），但 phases 注册是
 | `skills/fix/` `test-skill/` `audit-skill/` `review-skill/` `ask/` | 轻量入口 Skill（single/conversation 模式） |
 | `skills/generic-*/` | L3 内置 Skill（audit/implement/research/review/test/docs/wiki 等） |
 | `scripts/` | Python/Shell 工具脚本（状态管理、Skill 解析、技术栈检测、worktree、Web HUD、通知、团队看板、Skill 建议） |
+| `scripts/lib/` | 共享库（v3.4 新增）：compat.py(FileLock)、project.py(find_project_root)、state.py(读写锁)、pipeline.py(DAG)、plan.py(Phase解析)、config.py(YAML)、utils.py(时间) |
 | `hooks/` | stop-hook.py（续跑）+ plan-watcher.py（phases 自动注册）+ hooks.json + stop-hook-wrapper.py |
 | `agents/` | 12 个 Agent 的 Markdown 定义文件 |
 | `defaults/` | pipeline.yml（阶段定义）+ skill-map.yml（别名映射） |
@@ -190,7 +191,7 @@ SKILL.md 指引是"概率性"的（Claude 可能跳过），但 phases 注册是
 
 ## 注意事项
 
-- `scripts/harness.py` 中的 `find_project_root()` 和 `hooks/stop-hook.py` 各自有独立的项目根发现逻辑（后者需处理 Hook cwd 可能不在项目目录的情况）
+- `find_project_root` 统一实现在 `scripts/lib/project.py`，所有脚本/hook 共享（stop-hook 用 `scan_fallback=True`）
 - Skill 目录中只有 SKILL.md 文件，Skill 的实际执行逻辑由 Claude Code 解释 Markdown 指令完成
 - 所有 Skill 中的脚本引用统一使用 `${CLAUDE_PLUGIN_ROOT}/scripts/xxx`
 - Cursor 适配：`.cursor-plugin/hooks.json` 使用 `${CURSOR_PLUGIN_ROOT}`，`session-init.sh` 自动导出 `CLAUDE_PLUGIN_ROOT` 别名
@@ -200,3 +201,9 @@ SKILL.md 指引是"概率性"的（Claude 可能跳过），但 phases 注册是
 - `scripts/notify.py` — 桌面通知 + 飞书 Webhook；`harness.py` 的 `cmd_update` 在 pipeline 全部完成或 FAILED 时自动调用
 - `scripts/team-report.py` — 团队看板，扫描中央 session 索引汇总所有项目 pipeline 状态，支持 Markdown/JSON 输出
 - `scripts/skill-suggest.py` — 实验性 Skill 自进化建议，分析 eval/results/ 历史找出持续低分维度
+- v3.4 新增：`dev-config.yml` 的 `limits` 段支持配置六道防线参数（stage_timeout/max_duration/window_minutes/max_events/context_overflow_pct/rate_limit_pause_min/max_retries/max_auto_phases），不配则使用默认值，极端值自动 clamp 到合法范围
+- v3.4 新增：`pipeline.yml` 每个 stage 支持 `depends_on` 字段声明显式依赖，`harness.py` 和 `stop-hook.py` 基于 DAG 拓扑推进（向后兼容：无 depends_on 时走旧的顺序逻辑）
+- v3.4 新增：`scripts/lib/` 共享库消除 14 处代码重复（find_project_root 6→1、DAG 4→1、parse_phases 3→1、now_iso 3→1、_parse_simple_yaml 2→1、FileLock 4→1）
+- v3.4 新增：state 写入使用原子操作（.tmp + os.replace），防止中断导致损坏
+- v3.4 新增：`cmd_update` 状态白名单（VALID_STATUSES），RETRY 语义重置 FAILED→PENDING
+- v3.4 新增：Web HUD CORS 限制为 localhost，session index 文件权限 0o600，worktree.sh sys.argv 传参防注入

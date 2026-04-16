@@ -4,5 +4,16 @@
 project: my-project
 
 gates:
-  build: "echo 'TODO: 填写构建命令'"
-  test: "echo 'TODO: 填写测试命令'"
+  build: "echo 'ERROR: 未配置构建命令' && exit 1"
+  test: "echo 'ERROR: 未配置测试命令' && exit 1"
+
+# 防线参数（可选，不配则使用默认值）
+# limits:
+#   stage_timeout: 1800        # 单阶段超时，秒 (默认30min，范围5min~2h)
+#   max_duration: 7200         # 总运行时长，秒 (默认2h，范围10min~8h)
+#   window_minutes: 5          # 滑动窗口，分钟 (默认5，范围2~30)
+#   max_events: 10             # 窗口内最大续跑次数 (默认10，范围3~50)
+#   context_overflow_pct: 80   # 上下文溢出阈值 (默认80%，范围50~95)
+#   rate_limit_pause_min: 15   # Rate limit 暂停，分钟 (默认15，范围5~60)
+#   max_retries: 3             # 最大重试次数 (默认3，范围1~10)
+#   max_auto_phases: 10        # 最大自动Phase数 (默认10，范围1~50)

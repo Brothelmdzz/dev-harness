@@ -1,20 +1,24 @@
-# Dev Harness 默认 Pipeline 定义 (v3.0)
+# Dev Harness 默认 Pipeline 定义 (v3.4)
 # 项目可在 .claude/dev-config.yml 中覆盖任意字段
 
 stages:
   - name: research
+    depends_on: []
     when: "route in [B]"
     human: false
 
   - name: prd
+    depends_on: [research]
     when: "route in [A, B]"
     human: true
 
   - name: plan
+    depends_on: [prd]
     when: "route in [A, B, C]"
     human: true
 
   - name: implement
+    depends_on: [plan]
     when: "route in [A, B, C, C-lite, D]"
     loop: true
     gate:
@@ -24,24 +28,29 @@ stages:
     worktree: true
 
   - name: audit
+    depends_on: [implement]
     when: "route in [A, B, C]"
     parallel_group: post-implement
     auto_fix: true
 
   - name: docs
+    depends_on: [implement]
     when: "changed_api"
     parallel_group: post-implement
 
   - name: test
+    depends_on: [implement]
     when: "route in [A, B, C]"
     parallel_group: post-implement
     auto_fix: true
     max_retries: 3
 
   - name: review
+    depends_on: [audit, docs, test]
     when: "route in [A, B, C]"
 
   - name: remember
+    depends_on: [review]
     when: "always"
 
 # v3.0 新增: 角色 profile 定义

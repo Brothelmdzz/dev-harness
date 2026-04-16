@@ -15,8 +15,11 @@ default_profile: fullstack
 permissions:
   auto_fix: true
   auto_continue: true
-  max_auto_phases: 15
-  max_duration: 10800
   require_approval:
     - prd
     - plan
+
+# 防线参数（Monorepo 建议适当放宽）
+limits:
+  max_duration: 10800
+  max_auto_phases: 15

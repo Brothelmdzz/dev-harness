@@ -71,27 +71,51 @@ METRICS = {
         "description": "v3.3 新特性: 多模式/gate 大小写/worker timeout/幂等/lightweight skills",
         "weight": 2.0,  # 核心新特性, 权重加倍
     },
+    "limits_config": {
+        "description": "v3.4: 防线参数可配置化 (dev-config.yml limits 段)",
+        "weight": 1.5,
+    },
+    "depends_on": {
+        "description": "v3.4: Pipeline 显式依赖 (depends_on DAG)",
+        "weight": 1.5,
+    },
 }
 
 HOOK_SCRIPT = Path(__file__).parent.parent / "hooks" / "stop-hook.py"
 
 # ==================== 测试工具 ====================
 
+class CmdResult(tuple):
+    """兼容 (stdout, rc) 解包，同时携带 stderr 用于诊断。
+    失败时（rc != 0）detail 属性包含 stderr 用于快速诊断。"""
+    def __new__(cls, stdout, rc, stderr):
+        inst = super().__new__(cls, (stdout, rc))
+        inst.stderr = stderr
+        inst.detail = f"rc={rc}" + (f" stderr={stderr[:200]}" if stderr else "") if rc != 0 else ""
+        return inst
+
 def run_cmd(cmd, cwd=None):
-    """执行命令并返回 stdout"""
+    """执行命令并返回 CmdResult（支持 out, rc = run_cmd(...) 解包 + .stderr 访问）"""
     env = {**os.environ, "DH_EVAL": "1"}
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+    # Windows 上 bash 脚本必须通过 shell=True（cmd.exe 正确路由 Git Bash 环境）
+    # eval-runner 内部路径全受控，无注入风险
+    use_shell = isinstance(cmd, str) and os.name == "nt"
+    if isinstance(cmd, str) and not use_shell:
+        import shlex
+        cmd = shlex.split(cmd)
+    result = subprocess.run(cmd, shell=use_shell, capture_output=True, text=True,
                             encoding="utf-8", errors="replace", cwd=cwd, env=env)
-    return result.stdout.strip(), result.returncode
+    return CmdResult(result.stdout.strip(), result.returncode, result.stderr.strip())
 
 def run_script_with_stdin(script, stdin_data, cwd=None):
     """通过 stdin 传入数据运行 Python 脚本"""
     env = {**os.environ, "DH_EVAL": "1"}
+    cmd = f"python {script}" if os.name == "nt" else ["python", str(script)]
     result = subprocess.run(
-        f"python {script}", shell=True, capture_output=True, text=True,
+        cmd, shell=(os.name == "nt"), capture_output=True, text=True,
         encoding="utf-8", errors="replace", cwd=cwd, env=env, input=stdin_data
     )
-    return result.stdout.strip(), result.returncode
+    return CmdResult(result.stdout.strip(), result.returncode, result.stderr.strip())
 
 def assert_eq(actual, expected, msg=""):
     if actual != expected:
@@ -108,16 +132,15 @@ def test_skill_resolution():
     results = []
 
     # 测试 1: 无 L1/L2 覆盖时，audit 应正确降级到 L3 generic-audit
-    out, rc = run_cmd(f"python {RESOLVER_SCRIPT} audit --verbose",
+    result = run_cmd(f"python {RESOLVER_SCRIPT} audit --verbose",
                        cwd=os.getcwd())
+    out, rc = result
     if rc == 0:
         info = json.loads(out)
-        # 当前环境无 L1/L2 audit skill，应降级到 L3
-        # L1/L2 覆盖场景已在 skill_override 维度单独测试
         passed = "audit" in info["name"]
         results.append({"test": "project_audit_resolution", "pass": passed, "detail": f"{info['level']}:{info['name']}"})
     else:
-        results.append({"test": "project_audit_resolution", "pass": False, "detail": f"Command failed: rc={rc}"})
+        results.append({"test": "project_audit_resolution", "pass": False, "detail": result.detail})
 
     # 测试 2: 对未知 stage 应该返回 L3 generic
     out, rc = run_cmd(f"python {RESOLVER_SCRIPT} wiki --verbose",
@@ -300,7 +323,7 @@ def test_gate_detection():
     """测试构建系统自动检测"""
     import tempfile
     results = []
-    detect_script = Path(__file__).parent.parent / "scripts" / "detect-stack.sh"
+    detect_script = str(Path(__file__).parent.parent / "scripts" / "detect-stack.sh").replace("\\", "/")
 
     # 测试 gradle 检测
     tmpdir = tempfile.mkdtemp()
@@ -1001,6 +1024,102 @@ def test_v33_features():
 
     return {"metric": "v33_features", "results": results}
 
+# ==================== 新增: v3.4 limits 配置化测试 ====================
+
+def test_limits_config():
+    """测试 dev-config.yml limits 参数可配置化"""
+    import shutil
+    results = []
+
+    # 测试 1: 自定义 limits 写入 state
+    tmpdir = _make_test_env()
+    config_dir = Path(tmpdir) / ".claude"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "dev-config.yml").write_text(
+        "project: test\nlimits:\n  stage_timeout: 900\n  max_duration: 3600\n",
+        encoding="utf-8"
+    )
+    out, rc = run_cmd(f"python {HARNESS_SCRIPT} init limits-test --route C", cwd=tmpdir)
+    state = _read_state(tmpdir)
+    limits = state.get("limits", {})
+    results.append({
+        "test": "custom_limits_loaded",
+        "pass": limits.get("stage_timeout") == 900 and limits.get("max_duration") == 3600,
+        "detail": f"stage_timeout={limits.get('stage_timeout')}, max_duration={limits.get('max_duration')}"
+    })
+
+    # 测试 2: 极端值被 clamp
+    (config_dir / "dev-config.yml").write_text(
+        "project: test\nlimits:\n  stage_timeout: 10\n  max_events: 999\n",
+        encoding="utf-8"
+    )
+    out, rc = run_cmd(f"python {HARNESS_SCRIPT} init clamp-test --route C", cwd=tmpdir)
+    state = _read_state(tmpdir)
+    limits = state.get("limits", {})
+    results.append({
+        "test": "limits_bounds_clamping",
+        "pass": limits.get("stage_timeout") == 300 and limits.get("max_events") == 50,
+        "detail": f"stage_timeout={limits.get('stage_timeout')}, max_events={limits.get('max_events')}"
+    })
+
+    # 测试 3: 无 limits 时使用默认值
+    (config_dir / "dev-config.yml").write_text("project: test\n", encoding="utf-8")
+    out, rc = run_cmd(f"python {HARNESS_SCRIPT} init default-test --route C", cwd=tmpdir)
+    state = _read_state(tmpdir)
+    limits = state.get("limits", {})
+    results.append({
+        "test": "limits_default_fallback",
+        "pass": limits.get("stage_timeout") == 1800 and limits.get("max_retries") == 3,
+        "detail": f"stage_timeout={limits.get('stage_timeout')}, max_retries={limits.get('max_retries')}"
+    })
+
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    return {"metric": "limits_config", "results": results}
+
+# ==================== 新增: v3.4 depends_on DAG 测试 ====================
+
+def test_depends_on():
+    """测试 Pipeline depends_on 显式依赖"""
+    import shutil
+    results = []
+
+    # 测试 1: init 后 state 包含 depends_on 字段
+    tmpdir = _make_test_env()
+    out, rc = run_cmd(f"python {HARNESS_SCRIPT} init dag-test --route C", cwd=tmpdir)
+    state = _read_state(tmpdir)
+    has_deps = any(s.get("depends_on") for s in state["pipeline"])
+    results.append({
+        "test": "depends_on_in_state",
+        "pass": has_deps,
+        "detail": f"has_depends_on={has_deps}"
+    })
+
+    # 测试 2: implement DONE 后推进到 audit/docs/test（而非回退到 plan）
+    run_cmd(f"python {HARNESS_SCRIPT} update plan DONE", cwd=tmpdir)
+    run_cmd(f"python {HARNESS_SCRIPT} update implement DONE", cwd=tmpdir)
+    state = _read_state(tmpdir)
+    results.append({
+        "test": "depends_on_forward_advance",
+        "pass": state["current_stage"] in ("audit", "docs", "test"),
+        "detail": f"current_stage={state['current_stage']}"
+    })
+
+    # 测试 3: review 的 depends_on=[audit,docs,test] — 全部 DONE 后才推进
+    run_cmd(f"python {HARNESS_SCRIPT} update audit DONE", cwd=tmpdir)
+    run_cmd(f"python {HARNESS_SCRIPT} update docs DONE", cwd=tmpdir)
+    state_mid = _read_state(tmpdir)
+    not_review_yet = state_mid["current_stage"] != "review"
+    run_cmd(f"python {HARNESS_SCRIPT} update test DONE", cwd=tmpdir)
+    state_final = _read_state(tmpdir)
+    results.append({
+        "test": "depends_on_multi_deps",
+        "pass": not_review_yet and state_final["current_stage"] == "review",
+        "detail": f"before_test_done={state_mid['current_stage']}, after_all_done={state_final['current_stage']}"
+    })
+
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    return {"metric": "depends_on", "results": results}
+
 ALL_TESTS = {
     "skill_resolution": test_skill_resolution,
     "state_management": test_state_management,
@@ -1015,6 +1134,8 @@ ALL_TESTS = {
     "plan_watcher": test_plan_watcher,
     "phases_fallback": test_phases_fallback,
     "v33_features": test_v33_features,
+    "limits_config": test_limits_config,
+    "depends_on": test_depends_on,
 }
 
 def run_scenario(name):

@@ -16,7 +16,7 @@ tools:
 
 运行三层解析:
 ```bash
-python ~/.claude/plugins/dev-harness/scripts/skill-resolver.py --all
+python ${CLAUDE_PLUGIN_ROOT}/scripts/skill-resolver.py --all
 ```
 
 ## 解析优先级

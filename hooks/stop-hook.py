@@ -20,83 +20,50 @@ import json, sys, os
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
-try:
-    from filelock import FileLock
-except ImportError:
-    class FileLock:
-        def __init__(self, *a, **kw): pass
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
+# 让 hooks 能 import scripts/lib/
+_plugin_root = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_plugin_root / "scripts"))
 
-# ==================== 常量 ====================
+from lib.compat import FileLock
 
-STAGE_TIMEOUT_SEC = 1800       # 单阶段超时: 30 分钟
-DEFAULT_MAX_DURATION = 7200    # 总时长上限: 2 小时
-SLIDING_WINDOW_MIN = 5         # 滑动窗口: 5 分钟
-SLIDING_WINDOW_MAX_EVENTS = 10 # 窗口内最大续跑次数
-CONTEXT_OVERFLOW_PCT = 80      # 上下文使用率阈值
+# ==================== 默认常量（可通过 dev-config.yml 的 limits 段覆盖） ====================
+
+_DEFAULT_STAGE_TIMEOUT_SEC = 1800
+_DEFAULT_MAX_DURATION = 7200
+_DEFAULT_SLIDING_WINDOW_MIN = 5
+_DEFAULT_SLIDING_WINDOW_MAX_EVENTS = 10
+_DEFAULT_CONTEXT_OVERFLOW_PCT = 80
+_DEFAULT_RATE_LIMIT_PAUSE_MIN = 15
 RATE_LIMIT_KEYWORDS = ["rate limit", "hit your limit", "resets", "rate_limit", "too many requests"]
-RATE_LIMIT_PAUSE_MIN = 15      # rate limit 暂停时长
 
-# ==================== 工具函数 ====================
+def _get_limits(state):
+    """从 state["limits"] 读取参数，fallback 硬编码默认值"""
+    limits = state.get("limits", {})
+    # 同时兼容旧版 state 中 metrics 里的值
+    metrics = state.get("metrics", {})
+    return {
+        "stage_timeout":        limits.get("stage_timeout",        metrics.get("stage_timeout", _DEFAULT_STAGE_TIMEOUT_SEC)),
+        "max_duration":         limits.get("max_duration",         metrics.get("max_duration", _DEFAULT_MAX_DURATION)),
+        "window_minutes":       limits.get("window_minutes",       _DEFAULT_SLIDING_WINDOW_MIN),
+        "max_events":           limits.get("max_events",           _DEFAULT_SLIDING_WINDOW_MAX_EVENTS),
+        "context_overflow_pct": limits.get("context_overflow_pct", _DEFAULT_CONTEXT_OVERFLOW_PCT),
+        "rate_limit_pause_min": limits.get("rate_limit_pause_min", _DEFAULT_RATE_LIMIT_PAUSE_MIN),
+    }
+
+# ==================== 共享库导入 ====================
+from lib.project import find_project_root as _lib_find_project_root
+from lib.utils import now_iso, now_utc, parse_iso, elapsed_seconds
+from lib.plan import parse_phases_from_plan_dir as _parse_phases_from_plan_dir
+from lib.pipeline import (
+    has_depends_on as _has_depends_on,
+    find_next_by_deps as _find_next_by_deps,
+    find_next_by_order as _find_next_by_order,
+    find_next_runnable as _lib_find_next,
+)
 
 def find_project_root():
-    """
-    查找项目根目录（C4: 与 harness.py 逻辑统一）。
-    优先级: cwd 向上找 .git → cwd 有 harness-state → 扫描常见目录
-    """
-    # 方式 1: 从 cwd 向上查找 .git（与 harness.py 一致）
-    p = Path.cwd()
-    while p != p.parent:
-        if (p / ".git").exists():
-            return p
-        p = p.parent
-
-    # 方式 2: cwd 下有 harness-state.json（非 git 项目）
-    if (Path.cwd() / ".claude" / "harness-state.json").exists():
-        return Path.cwd()
-
-    # 方式 3: 扫描常见目录（限制扫描量，最多 100 个目录）
-    scan_roots = [Path.home() / "work", Path.home() / "projects", Path.home() / "dev"]
-    if os.name == "nt":
-        scan_roots.extend(Path(f"{d}:/work") for d in ["C", "D"])
-    best, best_mtime = None, 0
-    for root in scan_roots:
-        try:
-            if not root.is_dir():
-                continue
-            for d in list(root.iterdir())[:100]:
-                if not d.is_dir():
-                    continue
-                sf = d / ".claude" / "harness-state.json"
-                if sf.exists():
-                    mtime = sf.stat().st_mtime
-                    if mtime > best_mtime:
-                        best_mtime = mtime
-                        best = d
-        except (PermissionError, OSError):
-            pass
-    return best or Path.cwd()
-
-def now_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-def now_utc():
-    return datetime.now(timezone.utc)
-
-def parse_iso(s):
-    if not s:
-        return None
-    try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except (ValueError, AttributeError):
-        return None
-
-def elapsed_seconds(iso_str):
-    t = parse_iso(iso_str)
-    if not t:
-        return 0
-    return (now_utc() - t).total_seconds()
+    """stop-hook 需要 scan_fallback=True（hook cwd 可能不在项目目录）"""
+    return _lib_find_project_root(scan_fallback=True)
 
 def log_eval(project_root, state, event, detail):
     log_file = project_root / ".claude" / "harness-eval.jsonl"
@@ -113,26 +80,8 @@ def log_eval(project_root, state, event, detail):
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 def parse_phases_from_plan(project_root):
-    """从最新 plan 文件解析 Phase 列表（fallback：phases 为空时自动补救）"""
-    import re
-    plans_dir = project_root / ".claude" / "plans"
-    if not plans_dir.exists():
-        return []
-    plan_files = sorted(plans_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
-    if not plan_files:
-        return []
-    text = plan_files[0].read_text(encoding="utf-8")
-    phases = []
-    pattern = r'^#{2,3}\s+(?:Phase|PHASE|Task|TASK|阶段|第)\s*(\d+)\s*(?:阶段)?\s*[：:.\-—]?\s*(.*?)$'
-    for m in re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE):
-        num = int(m.group(1))
-        name = m.group(2).strip() or f"Phase {num}"
-        phases.append({
-            "name": f"Phase {num}: {name}" if name != f"Phase {num}" else name,
-            "status": "PENDING",
-            "error_count": 0,
-        })
-    return phases
+    """从最新 plan 文件解析 Phase 列表（委托给 lib.plan）"""
+    return _parse_phases_from_plan_dir(project_root)
 
 def count_recent_events(eval_log_path, minutes=5):
     if not eval_log_path.exists():
@@ -297,7 +246,7 @@ def main():
     # 这里自动转换，确保 Stop Hook 能正常工作
     if "stages" in state and "pipeline" not in state:
         state = migrate_legacy_state(state)
-        state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        save_state(state, state_file)
 
     # ==================== 多模式分流（v3.3） ====================
     mode = state.get("mode", "pipeline")
@@ -310,8 +259,8 @@ def main():
     # 防止多 session 互相干扰
     hook_session = hook_input.get("session_id", "")
     state_session = state.get("session_id", "")
-    if hook_session and state_session and hook_session != state_session:
-        # 不同 session 的状态，不干预
+    # P2-9: state 有 session_id 但 hook 缺时，默认不匹配（防绕过）
+    if state_session and (not hook_session or hook_session != state_session):
         sys.exit(0)
 
     if state.get("paused"):
@@ -336,7 +285,9 @@ def main():
     if not stage:
         sys.exit(0)
 
-    max_retries = state.get("metrics", {}).get("max_retries", 3)
+    max_retries = state.get("limits", {}).get("max_retries",
+                   state.get("metrics", {}).get("max_retries", 3))
+    lim = _get_limits(state)
 
     # ==================== 防线优先级（C3: 从互斥改为有序聚合） ====================
     # 优先级: context_overflow > rate_limit > 超时/频率
@@ -347,7 +298,7 @@ def main():
     ctx_used = ctx.get("used", 0)
     ctx_total = ctx.get("total", 1)
     ctx_pct = (ctx_used / ctx_total * 100) if ctx_total > 0 else 0
-    if ctx_pct > CONTEXT_OVERFLOW_PCT:
+    if ctx_pct > lim["context_overflow_pct"]:
         for s in pipeline:
             if s["name"] == "remember":
                 s["status"] = "PENDING"
@@ -361,36 +312,34 @@ def main():
     if any(kw in last_msg.lower() for kw in RATE_LIMIT_KEYWORDS):
         state["paused"] = True
         state["pause_reason"] = "rate_limit"
-        state["resume_at"] = (now_utc() + timedelta(minutes=RATE_LIMIT_PAUSE_MIN)).isoformat()
+        state["resume_at"] = (now_utc() + timedelta(minutes=lim["rate_limit_pause_min"])).isoformat()
         save_state(state, state_file)
         log_eval(project_root, state, "rate_limit_pause",
-                 f"暂停 {RATE_LIMIT_PAUSE_MIN}min，恢复时间: {state['resume_at']}")
+                 f"暂停 {lim['rate_limit_pause_min']}min，恢复时间: {state['resume_at']}")
         sys.exit(0)
 
     # ==================== 防线 3: 单阶段超时 ====================
-    stage_timeout = state.get("metrics", {}).get("stage_timeout", STAGE_TIMEOUT_SEC)
     if stage.get("started_at"):
         stage_elapsed = elapsed_seconds(stage["started_at"])
-        if stage_elapsed > stage_timeout:
+        if stage_elapsed > lim["stage_timeout"]:
             log_eval(project_root, state, "stage_timeout",
-                     f"{current} 运行 {stage_elapsed:.0f}s > {stage_timeout}s")
+                     f"{current} 运行 {stage_elapsed:.0f}s > {lim['stage_timeout']}s")
             sys.exit(0)
 
     # ==================== 防线 4: 总运行时长 ====================
-    max_duration = state.get("metrics", {}).get("max_duration", DEFAULT_MAX_DURATION)
     task_started = state.get("task", {}).get("started_at", "")
     if task_started:
         total_elapsed = elapsed_seconds(task_started)
-        if total_elapsed > max_duration:
+        if total_elapsed > lim["max_duration"]:
             log_eval(project_root, state, "total_timeout",
-                     f"总时长 {total_elapsed:.0f}s > {max_duration}s")
+                     f"总时长 {total_elapsed:.0f}s > {lim['max_duration']}s")
             sys.exit(0)
 
     # ==================== 防线 5: 滑动窗口频率限制 ====================
-    recent_count = count_recent_events(eval_log, minutes=SLIDING_WINDOW_MIN)
-    if recent_count > SLIDING_WINDOW_MAX_EVENTS:
+    recent_count = count_recent_events(eval_log, minutes=lim["window_minutes"])
+    if recent_count > lim["max_events"]:
         log_eval(project_root, state, "frequency_limit",
-                 f"{SLIDING_WINDOW_MIN}min 内 {recent_count} 次续跑 > {SLIDING_WINDOW_MAX_EVENTS}")
+                 f"{lim['window_minutes']}min 内 {recent_count} 次续跑 > {lim['max_events']}")
         sys.exit(0)
 
     # ==================== implement 阶段续跑逻辑（统一处理） ====================
@@ -413,12 +362,21 @@ def main():
 
     # ==================== 阶段产出验证 ====================
 
-    def has_valid_reports(pattern, min_size=100):
-        """H2: 检查报告文件存在且非空（>100 字节）"""
+    def has_valid_reports(pattern, min_size=500):
+        """H2: 检查报告文件存在、>=500 字节、且有至少 2 个 ## 标题"""
         reports_dir = project_root / ".claude" / "reports"
         if not reports_dir.exists():
             return False
-        return any(f.stat().st_size >= min_size for f in reports_dir.glob(pattern))
+        for f in reports_dir.glob(pattern):
+            if f.stat().st_size < min_size:
+                continue
+            try:
+                text = f.read_text(encoding="utf-8")
+                if text.count("\n## ") + (1 if text.startswith("## ") else 0) >= 2:
+                    return True
+            except OSError:
+                continue
+        return False
 
     # audit 阶段标记 DONE 但缺少审计报告 → 打回重做
     if current == "audit" and stage.get("status") == "DONE":
@@ -427,7 +385,7 @@ def main():
             save_state(state, state_file)
             reason = (
                 "audit 阶段缺少有效审计报告。请按 generic-audit skill 执行代码审计，"
-                "输出报告到 .claude/reports/audit-{module}-{date}.md（不少于 100 字节），再标记 audit DONE。"
+                "输出报告到 .claude/reports/audit-{module}-{date}.md（不少于 500 字节），再标记 audit DONE。"
             )
             output_block(reason, state, project_root)
             return
@@ -464,7 +422,7 @@ def main():
             stuck = []
             for ps in pending:
                 if ps.get("status") == "IN_PROGRESS" and ps.get("started_at"):
-                    if elapsed_seconds(ps["started_at"]) > STAGE_TIMEOUT_SEC:
+                    if elapsed_seconds(ps["started_at"]) > lim["stage_timeout"]:
                         stuck.append(ps["name"])
             if stuck:
                 log_eval(project_root, state, "parallel_group_timeout",
@@ -475,6 +433,7 @@ def main():
         last_in_group = group_stages[-1]["name"]
         next_names = find_next(pipeline, last_in_group)
         if not next_names:
+            _finalize_session_in_index(state.get("session_id", ""))
             sys.exit(0)
         state["current_stage"] = next_names[0]
         state["metrics"]["auto_continues"] = state["metrics"].get("auto_continues", 0) + 1
@@ -488,6 +447,7 @@ def main():
         if mode == "single":
             pending_stages = [s for s in pipeline if s["status"] == "PENDING"]
             if not pending_stages:
+                _finalize_session_in_index(state.get("session_id", ""))
                 sys.exit(0)  # 全部完成，正常结束
             # 还有待执行的阶段 → 续跑
             next_name = pending_stages[0]["name"]
@@ -500,6 +460,7 @@ def main():
 
         next_names = find_next(pipeline, current)
         if not next_names:
+            _finalize_session_in_index(state.get("session_id", ""))
             sys.exit(0)
         state["current_stage"] = next_names[0]
         state["metrics"]["auto_continues"] = state["metrics"].get("auto_continues", 0) + 1
@@ -520,23 +481,8 @@ def main():
     sys.exit(0)
 
 def find_next(pipeline, current_name):
-    """找到下一组可执行阶段（支持 parallel_group）"""
-    found = False
-    for s in pipeline:
-        if s["name"] == current_name:
-            found = True
-            continue
-        if not found:
-            continue
-        if s.get("status") != "PENDING":
-            continue
-        group = s.get("parallel_group")
-        if group:
-            return [ps["name"] for ps in pipeline
-                    if ps.get("parallel_group") == group
-                    and ps.get("status") == "PENDING"]
-        return [s["name"]]
-    return []
+    """找到下一组可执行阶段（委托给 lib.pipeline）"""
+    return _lib_find_next(pipeline, current_name)
 
 def output_block(reason, state, project_root):
     decision = {"decision": "block", "reason": reason}
@@ -544,11 +490,36 @@ def output_block(reason, state, project_root):
     log_eval(project_root, state, "auto_continue", reason)
 
 def save_state(state, path):
+    """原子化写入 state（先写 .tmp 再 os.replace，防损坏）"""
     state["updated_at"] = now_iso()
     path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_file = path.with_suffix(".json.tmp")
     lock = FileLock(str(path) + ".lock", timeout=10)
     with lock:
-        path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(str(tmp_file), str(path))
+
+
+def _finalize_session_in_index(session_id):
+    """兜底清理：stop-hook 触发终结类防线时标记 session 为 finished。
+    避免异常退出的 session 残留在中央索引占位。"""
+    if not session_id:
+        return
+    index_file = Path.home() / ".claude" / "dev-harness-sessions.json"
+    if not index_file.exists():
+        return
+    try:
+        lock = FileLock(str(index_file) + ".lock", timeout=3)
+        with lock:
+            index = json.loads(index_file.read_text(encoding="utf-8"))
+            if session_id in index and not index[session_id].get("finished_at"):
+                index[session_id]["finished_at"] = now_iso()
+                index_file.write_text(
+                    json.dumps(index, ensure_ascii=False, indent=2),
+                    encoding="utf-8"
+                )
+    except Exception:
+        pass  # 兜底逻辑静默失败，不阻断 hook
 
 if __name__ == "__main__":
     main()

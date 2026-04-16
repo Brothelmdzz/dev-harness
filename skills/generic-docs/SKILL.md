@@ -10,7 +10,7 @@ description: 通用文档更新 — 扫描代码变更自动更新 README 和 AP
 
 ## 执行流程
 
-1. **扫描变更**: `git diff --name-only master...HEAD` 找到改动文件
+1. **扫描变更**: `git diff --name-only $(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's|origin/||' || echo master)...HEAD` 找到改动文件
 2. **识别 API 变更**: 检查是否有路由/接口/导出的变化
 3. **更新文档**:
    - 如果项目有 `docs/` 目录 → 更新对应文档

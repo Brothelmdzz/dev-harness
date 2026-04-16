@@ -7,34 +7,20 @@ Dev Harness — 状态管理 + HUD 面板 + Hook 入口
   python harness.py hud [--watch]
   python harness.py eval [--report]
 """
-import json, os, sys, time, glob, argparse, uuid
+import json, os, sys, time, argparse, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-try:
-    from filelock import FileLock
-except ImportError:
-    # 无 filelock 时降级为无操作锁（单 Agent 场景够用，多 Agent 并行时建议安装）
-    class FileLock:
-        def __init__(self, *a, **kw): pass
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
-
-# ==================== 路径 ====================
-
-def find_project_root(override=None):
-    """定位项目根：override 参数 > DH_PROJECT 环境变量 > 向上查找 .git"""
-    if override:
-        return Path(override).resolve()
-    env = os.environ.get("DH_PROJECT")
-    if env:
-        return Path(env).resolve()
-    p = Path.cwd()
-    while p != p.parent:
-        if (p / ".git").exists():
-            return p
-        p = p.parent
-    return Path.cwd()
+from lib.compat import FileLock
+from lib.project import find_project_root
+from lib.utils import now_iso, parse_iso as _parse_iso
+from lib.config import parse_simple_yaml as _parse_simple_yaml
+from lib.pipeline import (
+    find_next_runnable,
+    validate_dag as validate_pipeline_dag,
+    pipeline_is_terminal as _pipeline_is_terminal,
+)
+from lib.plan import parse_phases, parse_phases_from_plan_dir
 
 PROJECT_ROOT = find_project_root()
 STATE_FILE = PROJECT_ROOT / ".claude" / "harness-state.json"
@@ -67,51 +53,76 @@ def load_session_index():
 def save_session_index(index):
     SESSION_INDEX.parent.mkdir(parents=True, exist_ok=True)
     SESSION_INDEX.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+    # 限制文件权限，防止多用户共享机器时信息泄露
+    if os.name != "nt":
+        try:
+            os.chmod(SESSION_INDEX, 0o600)
+        except OSError:
+            pass
+
+SESSION_GRACE_SEC = 600  # pipeline 完成后保留 10 分钟，再从索引移除
 
 def register_session(session_id, project_path):
-    """注册 session → 项目路径映射"""
+    """注册/更新 session → 项目路径映射（upsert 语义，同步清零 finished_at）"""
     index = load_session_index()
-    index[session_id] = {
-        "project": str(project_path),
-        "started_at": now_iso(),
-    }
-    # 清理超过 50 条的旧记录
+    if session_id in index:
+        # 同 session 重新注册（比如 update 时自愈旧 state），保留 started_at
+        index[session_id]["project"] = str(project_path)
+        index[session_id]["finished_at"] = None
+    else:
+        index[session_id] = {
+            "project": str(project_path),
+            "started_at": now_iso(),
+            "finished_at": None,
+        }
     if len(index) > 50:
         sorted_keys = sorted(index, key=lambda k: index[k].get("started_at", ""), reverse=True)
         index = {k: index[k] for k in sorted_keys[:50]}
     save_session_index(index)
 
-def find_latest_session_project():
-    """从中央索引找到最近活跃 session 的项目路径，索引为空时扫描常见位置"""
+def finalize_session(session_id):
+    """标记 session 为已完成（pipeline 终态触发），后续 prune 会按 grace period 清理"""
+    if not session_id:
+        return
     index = load_session_index()
-    # 优先从索引查找
-    if index:
-        for sid in sorted(index, key=lambda k: index[k].get("started_at", ""), reverse=True):
-            proj = Path(index[sid]["project"])
-            state_file = proj / ".claude" / "harness-state.json"
-            if state_file.exists():
-                return proj
-    # fallback: 扫描常见工作目录下的 harness-state.json
-    scan_roots = []
-    # Windows: C:\work\*  macOS/Linux: ~/work/*, ~/projects/*
-    home = Path.home()
-    if os.name == "nt":
-        scan_roots.append(Path("C:/work"))
-    scan_roots.extend([home / "work", home / "projects", home / "dev"])
-    candidates = []
-    for root in scan_roots:
-        if not root.is_dir():
+    if session_id in index and not index[session_id].get("finished_at"):
+        index[session_id]["finished_at"] = now_iso()
+        save_session_index(index)
+
+def prune_sessions(grace_sec=SESSION_GRACE_SEC):
+    """清理索引：(1) state 文件丢失立即删 (2) finished_at 超过 grace 删
+    (3) state 存在且已终态但缺 finished_at → 自愈补录
+    返回清理后的 index"""
+    index = load_session_index()
+    changed = False
+    now_dt = datetime.now(timezone.utc)
+    for sid in list(index.keys()):
+        entry = index[sid]
+        proj = Path(entry.get("project", ""))
+        sf = proj / ".claude" / "harness-state.json"
+        if not sf.exists():
+            del index[sid]
+            changed = True
             continue
-        for d in root.iterdir():
-            if not d.is_dir():
+        finished_at = entry.get("finished_at")
+        if finished_at:
+            ft = _parse_iso(finished_at)
+            if ft and (now_dt - ft).total_seconds() > grace_sec:
+                del index[sid]
+                changed = True
                 continue
-            sf = d / ".claude" / "harness-state.json"
-            if sf.exists():
-                candidates.append((sf.stat().st_mtime, d))
-    if candidates:
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        return candidates[0][1]
-    return None
+        else:
+            # 自愈：state 已终态但索引没标记 finished_at（常见于异常崩溃/旧版本状态）
+            try:
+                st = json.loads(sf.read_text(encoding="utf-8"))
+                if _pipeline_is_terminal(st.get("pipeline", [])):
+                    entry["finished_at"] = now_iso()
+                    changed = True
+            except (OSError, json.JSONDecodeError):
+                pass
+    if changed:
+        save_session_index(index)
+    return index
 
 # ==================== 状态读写 ====================
 
@@ -126,15 +137,19 @@ def load_state():
         return None
 
 def save_state(state):
+    """原子化写入 state（先写 .tmp 再 os.replace，防损坏）"""
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     state["updated_at"] = now_iso()
+    tmp_file = STATE_FILE.with_suffix(".json.tmp")
     with _state_lock():
-        STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(str(tmp_file), str(STATE_FILE))
 
 def load_and_update_state(updater_fn):
     """原子化 read-modify-write：在同一把锁内读取、修改、保存状态
     返回更新后的 state dict（文件不存在时返回 None）"""
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp_file = STATE_FILE.with_suffix(".json.tmp")
     with _state_lock():
         try:
             state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -142,24 +157,76 @@ def load_and_update_state(updater_fn):
             return None
         updater_fn(state)
         state["updated_at"] = now_iso()
-        STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(str(tmp_file), str(STATE_FILE))
         return state
 
-def now_iso():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+# ==================== 配置加载 ====================
+
+DEFAULT_LIMITS = {
+    "stage_timeout": 1800,          # 单阶段超时（秒）
+    "max_duration": 7200,           # 总运行时长（秒）
+    "window_minutes": 5,            # 滑动窗口（分钟）
+    "max_events": 10,               # 窗口内最大续跑次数
+    "context_overflow_pct": 80,     # 上下文溢出阈值（%）
+    "rate_limit_pause_min": 15,     # Rate limit 暂停（分钟）
+    "max_retries": 3,               # 最大重试次数
+    "max_auto_phases": 10,          # 最大自动 Phase 数
+}
+
+LIMITS_BOUNDS = {
+    "stage_timeout":        (300, 7200),
+    "max_duration":         (600, 28800),
+    "window_minutes":       (2, 30),
+    "max_events":           (3, 50),
+    "context_overflow_pct": (50, 95),
+    "rate_limit_pause_min": (5, 60),
+    "max_retries":          (1, 10),
+    "max_auto_phases":      (1, 50),
+}
+
+def _load_dev_config():
+    """读取 .claude/dev-config.yml"""
+    if not CONFIG_FILE.exists():
+        return {}
+    try:
+        return _parse_simple_yaml(CONFIG_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def _load_and_validate_limits(config):
+    """从 dev-config 加载 limits，校验范围，fallback 默认值"""
+    raw = config.get("limits", {})
+    if isinstance(raw, str):
+        raw = {}
+    result = dict(DEFAULT_LIMITS)
+    for key, default in DEFAULT_LIMITS.items():
+        val = raw.get(key)
+        if val is not None:
+            try:
+                val = type(default)(val)
+                lo, hi = LIMITS_BOUNDS.get(key, (None, None))
+                if lo is not None and val < lo:
+                    val = lo
+                if hi is not None and val > hi:
+                    val = hi
+            except (ValueError, TypeError):
+                val = default
+            result[key] = val
+    return result
 
 # ==================== 初始化 ====================
 
 DEFAULT_PIPELINE = [
-    {"name": "research",  "status": "SKIP"},
-    {"name": "prd",       "status": "SKIP"},
-    {"name": "plan",      "status": "PENDING"},
-    {"name": "implement", "status": "PENDING", "phases": []},
-    {"name": "audit",     "status": "PENDING", "parallel_group": "post-implement"},
-    {"name": "docs",      "status": "PENDING", "parallel_group": "post-implement"},
-    {"name": "test",      "status": "PENDING", "parallel_group": "post-implement"},
-    {"name": "review",    "status": "PENDING"},
-    {"name": "remember",  "status": "PENDING"},
+    {"name": "research",  "status": "SKIP",    "depends_on": []},
+    {"name": "prd",       "status": "SKIP",    "depends_on": ["research"]},
+    {"name": "plan",      "status": "PENDING", "depends_on": ["prd"]},
+    {"name": "implement", "status": "PENDING", "depends_on": ["plan"], "phases": []},
+    {"name": "audit",     "status": "PENDING", "depends_on": ["implement"], "parallel_group": "post-implement"},
+    {"name": "docs",      "status": "PENDING", "depends_on": ["implement"], "parallel_group": "post-implement"},
+    {"name": "test",      "status": "PENDING", "depends_on": ["implement"], "parallel_group": "post-implement"},
+    {"name": "review",    "status": "PENDING", "depends_on": ["audit", "docs", "test"]},
+    {"name": "remember",  "status": "PENDING", "depends_on": ["review"]},
 ]
 
 ROUTE_STAGES = {
@@ -190,8 +257,12 @@ def cmd_init(args):
 
     session_id = args.session_id or uuid.uuid4().hex[:12]
 
+    # 加载项目配置，提取 limits 参数（支持 dev-config.yml 覆盖默认值）
+    config = _load_dev_config()
+    limits = _load_and_validate_limits(config)
+
     state = {
-        "version": "1.1",
+        "version": "1.2",
         "session_id": session_id,
         "mode": mode,
         "project": PROJECT_ROOT.name,
@@ -205,15 +276,27 @@ def cmd_init(args):
         "pipeline": pipeline,
         "current_stage": next((s["name"] for s in pipeline if s["status"] == "PENDING"), None),
         "paused": False,
+        "limits": limits,
         "metrics": {
             "total_errors": 0,
             "auto_fixed": 0,
             "blocking": 0,
-            "max_retries": 3,
+            "max_retries": limits["max_retries"],
+            "max_duration": limits["max_duration"],
+            "stage_timeout": limits["stage_timeout"],
             "stages_completed": 0,
             "auto_continues": 0,
         },
+        # 细粒度活动流：由 hooks/activity-watcher.py 追加，环形缓冲最多 30 条
+        "activity": [],
     }
+    # DAG 合法性校验（仅当 pipeline 含 depends_on 时）
+    try:
+        validate_pipeline_dag(pipeline)
+    except ValueError as e:
+        print(json.dumps({"error": f"Pipeline DAG invalid: {e}"}, ensure_ascii=False), file=sys.stderr)
+        sys.exit(1)
+
     save_state(state)
 
     # 预创建标准目录结构（防止 Claude 自行创建不一致的目录名）
@@ -287,25 +370,6 @@ def cmd_check_continue(args):
 
     # IN_PROGRESS 但不是 implement → 不干预（可能还在跑）
 
-def find_next_runnable(pipeline, current_name):
-    """找到下一个可执行的阶段组（同 parallel_group 的阶段一起返回）"""
-    found_current = False
-    for s in pipeline:
-        if s["name"] == current_name:
-            found_current = True
-            continue
-        if not found_current:
-            continue
-        if s["status"] != "PENDING":
-            continue
-        group = s.get("parallel_group")
-        if group:
-            return [ps["name"] for ps in pipeline
-                    if ps.get("parallel_group") == group
-                    and ps["status"] == "PENDING"]
-        return [s["name"]]
-    return []
-
 # ==================== 通知集成 ====================
 
 def _try_notify_pipeline(state, new_status):
@@ -332,10 +396,21 @@ def _try_notify_pipeline(state, new_status):
 
 # ==================== 状态更新 ====================
 
+VALID_STATUSES = {"PENDING", "IN_PROGRESS", "DONE", "SKIP", "FAILED", "BLOCKED", "RETRY"}
+
 def cmd_update(args):
     """原子化状态更新：read-modify-write 在同一把锁内完成（修复 C1+C2）"""
     stage_name = args.stage
     new_status = args.status.upper()
+
+    if new_status not in VALID_STATUSES:
+        print(json.dumps({"error": f"Invalid status '{new_status}'. Valid: {sorted(VALID_STATUSES)}"},
+                         ensure_ascii=False))
+        sys.exit(1)
+
+    # RETRY 语义: 重置 FAILED→PENDING（P2-2: 死状态恢复）
+    if new_status == "RETRY":
+        new_status = "PENDING"
 
     def updater(state):
         for s in state["pipeline"]:
@@ -370,6 +445,11 @@ def cmd_update(args):
                         state["metrics"]["auto_fixed"] += 1
                     else:
                         state["metrics"]["blocking"] += 1
+                    # P2-4: 递增 phase 级 error_count（防线 6 依赖此字段）
+                    if args.phase is not None and "phases" in s:
+                        idx = args.phase - 1
+                        if 0 <= idx < len(s["phases"]):
+                            s["phases"][idx]["error_count"] = s["phases"][idx].get("error_count", 0) + 1
                 break
 
         # C1: FAILED 状态处理 — 标记并行组内其他 PENDING 为 BLOCKED
@@ -395,16 +475,21 @@ def cmd_update(args):
                 if nxt:
                     state["current_stage"] = nxt[0]
 
-    result = load_and_update_state(updater)
-    if result is None:
+    state = load_and_update_state(updater)
+    if state is None:
         print("ERROR: 无 harness 状态", file=sys.stderr)
         sys.exit(1)
-    # log 在锁外执行（不影响原子性）
-    state = load_state()
-    if state:
-        log_eval_event(state, "update", f"{stage_name} -> {new_status}")
-        # Pipeline 完成/失败时发送桌面通知
-        _try_notify_pipeline(state, new_status)
+    # P2-10: 直接使用 load_and_update_state 返回值，不再锁外重读
+    log_eval_event(state, "update", f"{stage_name} -> {new_status}")
+    sid = state.get("session_id")
+    if sid and not os.environ.get("DH_EVAL"):
+        index = load_session_index()
+        if sid not in index or index[sid].get("project") != str(PROJECT_ROOT):
+            register_session(sid, PROJECT_ROOT)
+    _try_notify_pipeline(state, new_status)
+    if new_status in ("DONE", "FAILED") and _pipeline_is_terminal(state.get("pipeline", [])):
+        if sid:
+            finalize_session(sid)
     print(json.dumps({"stage": stage_name, "status": new_status}, ensure_ascii=False))
 
 # ==================== HUD 面板 ====================
@@ -413,9 +498,12 @@ def cmd_hud(args):
     if getattr(args, 'project', None):
         set_project_root(args.project)
     elif not STATE_FILE.exists():
-        proj = find_latest_session_project()
-        if proj:
-            set_project_root(proj)
+        # 从中央索引挑最新的活跃 session
+        index = prune_sessions()
+        active = [(sid, e) for sid, e in index.items() if not e.get("finished_at")]
+        if active:
+            active.sort(key=lambda x: x[1].get("started_at", ""), reverse=True)
+            set_project_root(active[0][1]["project"])
 
     while True:
         state = load_state()
@@ -498,7 +586,7 @@ def render_hud(state):
                 t1 = datetime.fromisoformat(s["completed_at"].replace("Z", "+00:00"))
                 dur_sec = int((t1 - t0).total_seconds())
                 duration = f"{dur_sec//60}m{dur_sec%60:02d}s"
-            except:
+            except (ValueError, TypeError, OSError):
                 pass
 
         line = f"{marker} {icon} {name:<12} {status:<14} {duration:<8} {source}"
@@ -619,7 +707,7 @@ def cmd_autoloop_status(args):
             t1 = datetime.now(timezone.utc)
             elapsed_sec = int((t1 - t0).total_seconds())
             elapsed = f"{elapsed_sec//3600}h{(elapsed_sec%3600)//60:02d}m"
-        except:
+        except (ValueError, TypeError, OSError):
             pass
 
     print(json.dumps({
@@ -726,7 +814,7 @@ def cmd_rich_hud(args):
                         t1 = datetime.fromisoformat(s["completed_at"].replace("Z", "+00:00"))
                         ds = int((t1 - t0).total_seconds())
                         dur = f"{ds//60}m{ds%60:02d}s"
-                    except:
+                    except (ValueError, TypeError, OSError):
                         pass
 
                 pt.add_row(f"{prefix}{name}", f"[{st}]{status}[/]", source, dur)
@@ -757,7 +845,7 @@ def cmd_rich_hud(args):
                             log_text.append(line + "\n", style="yellow")
                         else:
                             log_text.append(line + "\n")
-                except:
+                except (OSError, UnicodeDecodeError):
                     log_text.append("日志读取错误\n", style="red")
             else:
                 log_text.append("等待 AutoLoop 日志...\n", style="dim")
@@ -781,315 +869,15 @@ def cmd_rich_hud(args):
 
 WEB_HUD_PORT = 1603
 
-WEB_HUD_HTML = r"""<!DOCTYPE html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<title>Dev Harness HUD</title>
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<style>
-  :root { --bg:#0d1117; --card:#161b22; --border:#30363d; --text:#c9d1d9; --dim:#8b949e;
-          --green:#3fb950; --yellow:#d29922; --red:#f85149; --blue:#58a6ff; --purple:#bc8cff; }
-  * { margin:0; padding:0; box-sizing:border-box; }
-  body { background:var(--bg); color:var(--text); font-family:'JetBrains Mono',Consolas,monospace; font-size:14px; padding:20px; }
-  h1 { color:var(--blue); font-size:18px; margin-bottom:4px; }
-  .meta { color:var(--dim); font-size:12px; margin-bottom:16px; display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
-  .conn-status { display:inline-flex; align-items:center; gap:4px; font-size:11px; padding:2px 8px;
-                 border-radius:10px; border:1px solid var(--border); }
-  .conn-status .indicator { width:6px; height:6px; border-radius:50%; }
-  .conn-live .indicator { background:var(--green); } .conn-live { color:var(--green); }
-  .conn-poll .indicator { background:var(--yellow); } .conn-poll { color:var(--yellow); }
-  .conn-off .indicator { background:var(--red); } .conn-off { color:var(--red); }
-  .tabs-bar { display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
-  .tabs { display:flex; gap:4px; flex-wrap:wrap; flex:1; }
-  .show-all { color:var(--dim); font-size:11px; cursor:pointer; user-select:none; }
-  .show-all input { vertical-align:middle; margin-right:4px; }
-  .tab { padding:6px 16px; border-radius:6px 6px 0 0; cursor:pointer; font-size:12px;
-         background:var(--card); border:1px solid var(--border); border-bottom:none; color:var(--dim); }
-  .tab.active { background:var(--bg); color:var(--blue); border-color:var(--blue); border-bottom:1px solid var(--bg); }
-  .tab .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; }
-  .dot.running { background:var(--yellow); } .dot.done { background:var(--green); } .dot.idle { background:var(--dim); }
-  .mobile-select { display:none; width:100%; padding:8px 12px; border-radius:6px; background:var(--card);
-                   color:var(--text); border:1px solid var(--border); font-family:inherit; font-size:13px; margin-bottom:16px; }
-  .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:16px; }
-  .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
-  .card h2 { color:var(--blue); font-size:14px; margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:8px; }
-  .progress-bar { display:flex; height:6px; border-radius:3px; overflow:hidden; margin-bottom:16px; background:var(--border); }
-  .progress-bar .seg { height:100%; transition:flex 0.3s; }
-  .seg.done { background:var(--green); } .seg.active { background:var(--yellow); }
-  .seg.pending { background:var(--border); } .seg.skip { background:transparent; }
-  .stage { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid var(--border); }
-  .stage:last-child { border-bottom:none; }
-  .stage .icon { width:24px; text-align:center; font-weight:bold; }
-  .stage .name { width:100px; }
-  .stage .status { flex:1; }
-  .stage .dur { width:60px; text-align:right; color:var(--dim); }
-  .stage .group-tag { font-size:10px; color:var(--purple); margin-left:4px; }
-  .stage.current { background:rgba(88,166,255,0.08); border-radius:4px; margin:0 -8px; padding:6px 8px; }
-  .DONE { color:var(--green); } .IN_PROGRESS { color:var(--yellow); }
-  .SKIP { color:var(--dim); } .PENDING { color:var(--text); }
-  .FAILED,.BLOCKED { color:var(--red); }
-  .phase { padding:4px 0 4px 32px; font-size:13px; color:var(--dim); display:flex; align-items:center; gap:6px; }
-  .phase .gate { display:inline-block; margin-left:8px; font-size:11px; }
-  .gate.pass { color:var(--green); } .gate.fail { color:var(--red); }
-  .phase .err { color:var(--red); font-size:11px; }
-  .workers { margin-top:12px; padding-top:12px; border-top:1px solid var(--border); }
-  .workers h3 { font-size:12px; color:var(--purple); margin-bottom:8px; display:flex; align-items:center; gap:6px; }
-  .workers .mode-badge { font-size:10px; padding:1px 6px; border-radius:3px; background:var(--purple); color:var(--bg); }
-  .worker { display:flex; gap:8px; font-size:12px; padding:4px 0; border-bottom:1px solid var(--border); align-items:center; }
-  .worker:last-child { border-bottom:none; }
-  .worker .w-id { color:var(--blue); min-width:80px; }
-  .worker .w-phase { color:var(--text); flex:1; }
-  .worker .w-branch { color:var(--dim); font-size:11px; }
-  .worker .w-status { min-width:70px; text-align:right; font-weight:bold; }
-  .batch-group { margin:8px 0; padding:8px; border:1px dashed var(--border); border-radius:4px; }
-  .batch-group .batch-label { font-size:10px; color:var(--dim); margin-bottom:4px; }
-  .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
-  .metric { text-align:center; }
-  .metric .val { font-size:24px; font-weight:bold; }
-  .metric .label { font-size:11px; color:var(--dim); margin-top:4px; }
-  .extra-metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin-top:16px;
-                   padding-top:12px; border-top:1px solid var(--border); font-size:12px; color:var(--dim); text-align:center; }
-  .no-data { color:var(--dim); text-align:center; padding:40px; }
-  .session-id { color:var(--purple); font-size:12px; }
-  .eval-section { margin-top:16px; }
-  .eval-chart-wrap { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:16px; }
-  .eval-chart-wrap h2 { color:var(--blue); font-size:14px; margin-bottom:12px; border-bottom:1px solid var(--border); padding-bottom:8px; }
-  .eval-chart-wrap canvas { width:100%; height:200px; }
-  .eval-legend { display:flex; gap:16px; margin-top:8px; font-size:11px; color:var(--dim); justify-content:center; }
-  .eval-legend span { display:flex; align-items:center; gap:4px; }
-  .eval-legend .swatch { width:10px; height:10px; border-radius:2px; display:inline-block; }
-  @media (max-width:768px) {
-    body { padding:12px 8px; font-size:13px; }
-    h1 { font-size:16px; }
-    .tabs { display:none; }
-    .mobile-select { display:block; }
-    .grid { grid-template-columns:1fr; gap:12px; }
-    .stage .name { width:70px; font-size:12px; }
-    .stage .dur { width:50px; font-size:11px; }
-    .phase { padding-left:20px; font-size:12px; }
-    .metrics { grid-template-columns:repeat(3,1fr); gap:8px; }
-    .metric .val { font-size:18px; }
-    .extra-metrics { grid-template-columns:repeat(2,1fr); }
-    .eval-chart-wrap canvas { height:150px; }
-    .worker { flex-wrap:wrap; }
-    .worker .w-branch { width:100%; padding-left:88px; }
-  }
-</style>
-</head>
-<body>
-<h1>Dev Harness HUD</h1>
-<div class="meta">
-  <span id="conn-indicator" class="conn-status conn-off"><span class="indicator"></span><span id="conn-label">connecting</span></span>
-  <span id="updated"></span>
-</div>
-<div class="tabs-bar"><div class="tabs" id="tabs"></div><label class="show-all"><input type="checkbox" id="show-all" onchange="renderTabs()"> show completed</label></div>
-<select class="mobile-select" id="mobile-tabs" onchange="switchProject(this.value)"></select>
-<div id="app"><div class="no-data">connecting...</div></div>
-<div class="eval-section" id="eval-section" style="display:none">
-  <div class="eval-chart-wrap">
-    <h2>eval trend</h2>
-    <canvas id="eval-canvas"></canvas>
-    <div class="eval-legend">
-      <span><span class="swatch" style="background:#58a6ff"></span>score</span>
-      <span><span class="swatch" style="background:#3fb950"></span>pass rate</span>
-    </div>
-  </div>
-</div>
-<script>
-var projects=[],activeProject=null,evtSource=null,pollTimer=null,connMode='off',evalData=null;
+def _load_web_hud_html():
+    """从独立文件加载 Web HUD 前端 HTML"""
+    html_path = Path(__file__).resolve().parent / "web_hud.html"
+    return html_path.read_text(encoding="utf-8")
 
-function setConnMode(m){
-  connMode=m;
-  var el=document.getElementById('conn-indicator'),lb=document.getElementById('conn-label');
-  el.className='conn-status conn-'+m;
-  lb.textContent=m==='live'?'realtime':m==='poll'?'polling':'disconnected';
-}
-
-function startSSE(){
-  if(evtSource){evtSource.close();evtSource=null;}
-  if(!activeProject)return;
-  try{evtSource=new EventSource('/api/events?project='+encodeURIComponent(activeProject));}catch(e){startPoll();return;}
-  evtSource.onopen=function(){setConnMode('live');stopPoll();};
-  evtSource.onmessage=function(e){try{render(JSON.parse(e.data));}catch(err){}};
-  evtSource.addEventListener('projects',function(e){
-    try{projects=JSON.parse(e.data);if(projects.length&&!activeProject){activeProject=projects[0].path;startSSE();}renderTabs();}catch(err){}
-  });
-  evtSource.onerror=function(){setConnMode('poll');if(evtSource){evtSource.close();evtSource=null;}startPoll();};
-}
-function startPoll(){if(pollTimer)return;setConnMode('poll');pollTimer=setInterval(function(){refresh();},2000);}
-function stopPoll(){if(pollTimer){clearInterval(pollTimer);pollTimer=null;}}
-
-async function loadProjects(){
-  try{var r=await fetch('/api/projects');if(r.ok)projects=await r.json();
-    if(projects.length&&!activeProject)activeProject=projects[0].path;renderTabs();}catch(e){}
-}
-function renderTabs(){
-  var tabsEl=document.getElementById('tabs'),selEl=document.getElementById('mobile-tabs');
-  var showAll=document.getElementById('show-all') && document.getElementById('show-all').checked;
-  var visible=showAll?projects:projects.filter(function(p){return !p.completed;});
-  // 若当前 active 项目被过滤掉，切到第一个可见项目
-  if(visible.length && !visible.find(function(p){return p.path===activeProject;})){
-    activeProject=visible[0].path;startSSE();refresh();
-  }
-  if(!visible.length){
-    tabsEl.innerHTML='<span style="color:var(--dim);font-size:11px">no active projects'+(projects.length?' ('+projects.length+' completed, tick to show)':'')+'</span>';
-    selEl.innerHTML='';return;
-  }
-  tabsEl.innerHTML=visible.map(function(p){
-    var isActive=p.path===activeProject,stage=p.current_stage||'idle',
-        dotClass=p.completed?'done':(stage?'running':'idle');
-    return '<div class="tab '+(isActive?'active':'')+'" onclick="switchProject(\''+p.path.replace(/\\/g,'\\\\')+'\')">'
-      +'<span class="dot '+dotClass+'"></span>'+p.name+' <span style="color:var(--dim);font-size:10px">'+(p.completed?'done':stage)+'</span></div>';
-  }).join('');
-  selEl.innerHTML=visible.map(function(p){
-    return '<option value="'+p.path.replace(/"/g,'&quot;')+'"'+(p.path===activeProject?' selected':'')+'>'+p.name+' ['+(p.completed?'done':p.current_stage||'idle')+']</option>';
-  }).join('');
-}
-function switchProject(path){activeProject=path;renderTabs();startSSE();refresh();}
-
-async function refresh(){
-  if(!activeProject){await loadProjects();return;}
-  try{var r=await fetch('/api/state?project='+encodeURIComponent(activeProject));
-    if(!r.ok){document.getElementById('app').innerHTML='<div class="no-data">waiting...</div>';return;}
-    render(await r.json());
-  }catch(e){setConnMode('off');}
-}
-
-function render(s){
-  var task=s.task||{},metrics=s.metrics||{},pipeline=s.pipeline||[],current=s.current_stage||'';
-  document.getElementById('updated').textContent=(s.updated_at||'').replace('T',' ').replace('Z','');
-  var active=pipeline.filter(function(x){return x.status!=='SKIP';});
-  var barHtml=active.map(function(st){
-    var cls=st.status==='DONE'?'done':st.status==='IN_PROGRESS'?'active':'pending';
-    return '<div class="seg '+cls+'" style="flex:1" title="'+st.name+': '+st.status+'"></div>';
-  }).join('');
-  var stagesHtml='';
-  for(var si=0;si<pipeline.length;si++){
-    var st=pipeline[si],isCur=st.name===current;
-    var icon=st.status==='DONE'?'\u2713':st.status==='IN_PROGRESS'?'\u25b6':st.status==='SKIP'?'\u2014':st.status==='FAILED'?'\u2717':'\u25cb';
-    var dur=calcDur(st);
-    var group=st.parallel_group?'<span class="group-tag">\u2ae8 '+st.parallel_group+'</span>':'';
-    stagesHtml+='<div class="stage '+(isCur?'current':'')+'">'
-      +'<span class="icon '+st.status+'">'+icon+'</span>'
-      +'<span class="name">'+st.name+group+'</span>'
-      +'<span class="status '+st.status+'">'+st.status+'</span>'
-      +'<span class="dur">'+dur+'</span></div>';
-    if(st.name==='implement'){
-      if(st.phases&&st.phases.length){
-        for(var pi=0;pi<st.phases.length;pi++){
-          var p=st.phases[pi];
-          var pIcon=p.status==='DONE'?'\u2713':p.status==='IN_PROGRESS'?'\u25b6':'\u25cb';
-          var gs='';
-          if(p.gates){for(var gk in p.gates){if(p.gates.hasOwnProperty(gk))gs+='<span class="gate '+(p.gates[gk]?'pass':'fail')+'">'+gk+':'+(p.gates[gk]?'\u2713':'\u2717')+'</span>';}}
-          var err=p.error_count?'<span class="err">\u26a0'+p.error_count+'</span>':'';
-          stagesHtml+='<div class="phase"><span class="'+p.status+'">'+pIcon+'</span> '+(p.name||'Phase')+' '+gs+' '+err+'</div>';
-        }
-      }
-      stagesHtml+=renderWorkers(st);
-    }
-  }
-  var done=pipeline.filter(function(x){return x.status==='DONE';}).length;
-  var total=pipeline.filter(function(x){return x.status!=='SKIP';}).length;
-  var pct=total?Math.round(done/total*100):0;
-  document.getElementById('app').innerHTML=
-    '<div class="progress-bar">'+barHtml+'</div>'
-    +'<div class="grid">'
-    +'<div class="card"><h2>\u4efb\u52a1: '+(task.name||'?')+' <span class="session-id">'+(s.session_id?'#'+s.session_id:'')+'</span></h2>'
-    +'<div style="color:var(--dim);font-size:12px;margin-bottom:12px">Route: '+(task.route||'?')+' | Branch: '+(task.branch||'-')+' | Module: '+(task.module||'-')+'</div>'
-    +stagesHtml+'</div>'
-    +'<div class="card"><h2>\u6307\u6807</h2>'
-    +'<div class="metrics">'
-    +'<div class="metric"><div class="val" style="color:var(--blue)">'+pct+'%</div><div class="label">\u8fdb\u5ea6 ('+done+'/'+total+')</div></div>'
-    +'<div class="metric"><div class="val" style="color:var(--yellow)">'+(metrics.auto_continues||0)+'</div><div class="label">\u81ea\u52a8\u7eed\u8dd1</div></div>'
-    +'<div class="metric"><div class="val" style="color:'+((metrics.total_errors||0)>0?'var(--red)':'var(--green)')+'">'+(metrics.total_errors||0)+'</div><div class="label">\u9519\u8bef</div></div>'
-    +'</div>'
-    +'<div class="extra-metrics">'
-    +'<div>\u81ea\u52a8\u4fee\u590d: '+(metrics.auto_fixed||0)+'</div>'
-    +'<div>\u963b\u65ad: '+(metrics.blocking||0)+'</div>'
-    +'<div>\u91cd\u8bd5\u4e0a\u9650: '+(metrics.max_retries||3)+'</div>'
-    +'<div>\u5df2\u5b8c\u6210: '+(metrics.stages_completed||0)+'</div>'
-    +'</div></div></div>';
-}
-
-function renderWorkers(implStage){
-  var mode=implStage.mode||'serial',phases=implStage.phases||[],workers=implStage.workers||[];
-  if(mode==='serial'&&!workers.length)return '';
-  var html='<div class="workers"><h3>Orchestrator <span class="mode-badge">'+mode+'</span></h3>';
-  var batches={};
-  for(var i=0;i<phases.length;i++){var b=phases[i].batch||0;if(!batches[b])batches[b]=[];batches[b].push(phases[i]);}
-  var batchKeys=Object.keys(batches).sort(function(a,b){return a-b;});
-  if(batchKeys.length>1){
-    for(var bi=0;bi<batchKeys.length;bi++){
-      var bk=batchKeys[bi],bp=batches[bk],allDone=bp.every(function(p){return p.status==='DONE';});
-      html+='<div class="batch-group" style="border-color:'+(allDone?'var(--green)':'var(--border)')+'"><div class="batch-label">Batch '+(parseInt(bk)+1)+' ('+bp.length+' phases'+(allDone?' \u2713':'')+')</div>';
-      for(var j=0;j<bp.length;j++){
-        var pi2=bp[j].status==='DONE'?'\u2713':bp[j].status==='IN_PROGRESS'?'\u25b6':'\u25cb';
-        html+='<div class="phase"><span class="'+bp[j].status+'">'+pi2+'</span> '+(bp[j].name||'Phase')+'</div>';
-      }
-      html+='</div>';
-    }
-  }
-  if(workers.length){
-    for(var wi=0;wi<workers.length;wi++){
-      var w=workers[wi],sc=w.status==='DONE'?'DONE':w.status==='FAILED'||w.status==='TIMEOUT'?'FAILED':'IN_PROGRESS';
-      html+='<div class="worker"><span class="w-id">'+(w.worker_id||'?')+'</span><span class="w-phase">'+(w.phase||'-')+'</span><span class="w-branch">'+(w.worktree_branch||'')+'</span><span class="w-status '+sc+'">'+w.status+'</span></div>';
-    }
-  }
-  return html+'</div>';
-}
-
-async function loadEvalHistory(){
-  try{var r=await fetch('/api/eval-history');if(!r.ok)return;evalData=await r.json();
-    if(evalData&&evalData.length>1){document.getElementById('eval-section').style.display='block';drawEvalChart();}
-  }catch(e){}
-}
-
-function drawEvalChart(){
-  if(!evalData||evalData.length<2)return;
-  var canvas=document.getElementById('eval-canvas'),rect=canvas.parentElement.getBoundingClientRect();
-  var dpr=window.devicePixelRatio||1,W=Math.floor(rect.width-32),H=200;
-  canvas.width=W*dpr;canvas.height=H*dpr;canvas.style.width=W+'px';canvas.style.height=H+'px';
-  var ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);
-  var pad={top:20,right:20,bottom:40,left:50},cw=W-pad.left-pad.right,ch=H-pad.top-pad.bottom,n=evalData.length;
-  ctx.fillStyle='#161b22';ctx.fillRect(0,0,W,H);
-  ctx.strokeStyle='#30363d';ctx.lineWidth=0.5;
-  for(var gi=0;gi<=4;gi++){var gy=pad.top+ch*gi/4;ctx.beginPath();ctx.moveTo(pad.left,gy);ctx.lineTo(pad.left+cw,gy);ctx.stroke();}
-  ctx.fillStyle='#8b949e';ctx.font='10px monospace';ctx.textAlign='right';
-  for(var yi=0;yi<=4;yi++){ctx.fillText((100-yi*25)+'%',pad.left-6,pad.top+ch*yi/4+3);}
-  ctx.textAlign='center';
-  var step=Math.max(1,Math.floor(n/8));
-  for(var xi=0;xi<n;xi+=step){ctx.fillText(evalData[xi].date.slice(5),pad.left+(xi/(n-1))*cw,H-pad.bottom+16);}
-  function drawLine(key,color){
-    ctx.strokeStyle=color;ctx.lineWidth=2;ctx.beginPath();
-    for(var i=0;i<n;i++){var x=pad.left+(i/(n-1))*cw,y=pad.top+ch*(1-evalData[i][key]);if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}
-    ctx.stroke();ctx.fillStyle=color;
-    for(var i2=0;i2<n;i2++){var x2=pad.left+(i2/(n-1))*cw,y2=pad.top+ch*(1-evalData[i2][key]);ctx.beginPath();ctx.arc(x2,y2,3,0,Math.PI*2);ctx.fill();}
-  }
-  drawLine('score','#58a6ff');drawLine('pass_rate','#3fb950');
-  if(n>0){var last=evalData[n-1],lx=Math.min(pad.left+cw+4,W-40);
-    ctx.fillStyle='#58a6ff';ctx.font='bold 11px monospace';ctx.textAlign='left';
-    ctx.fillText((last.score*100).toFixed(1),lx,pad.top+ch*(1-last.score)+4);
-    ctx.fillStyle='#3fb950';ctx.fillText((last.pass_rate*100).toFixed(1),lx,pad.top+ch*(1-last.pass_rate)+4);
-  }
-}
-
-function calcDur(st){
-  if(!st.started_at)return '';
-  var end=st.completed_at?new Date(st.completed_at):new Date(),d=(end-new Date(st.started_at))/1000;
-  if(d<0)return '';
-  return d>3600?Math.floor(d/3600)+'h'+('0'+Math.floor(d%3600/60)).slice(-2)+'m'
-       :d>60?Math.floor(d/60)+'m'+('0'+Math.floor(d%60)).slice(-2)+'s'
-       :Math.floor(d)+'s';
-}
-
-loadProjects().then(function(){startSSE();setTimeout(function(){if(connMode==='off')startPoll();},3000);});
-setInterval(loadProjects,10000);
-loadEvalHistory();
-window.addEventListener('resize',function(){if(evalData)drawEvalChart();});
-</script>
-</body>
-</html>"""
+def _load_web_hud_html():
+    """从独立文件加载 Web HUD 前端 HTML"""
+    html_path = Path(__file__).resolve().parent / "web_hud.html"
+    return html_path.read_text(encoding="utf-8")
 
 def _scan_eval_results():
     """扫描 eval/results/eval-*.json，返回按时间排序的评测历史"""
@@ -1188,7 +976,7 @@ def cmd_web_hud(args):
                 self.send_response(200)
                 self.send_header('Content-Type', 'text/html; charset=utf-8')
                 self.end_headers()
-                self.wfile.write(WEB_HUD_HTML.encode('utf-8'))
+                self.wfile.write(_load_web_hud_html().encode('utf-8'))
 
         def _handle_sse(self, proj_path):
             """Server-Sent Events：循环检测 mtime，变化时推送 state"""
@@ -1200,7 +988,7 @@ def cmd_web_hud(args):
             self.send_header('Content-Type', 'text/event-stream')
             self.send_header('Cache-Control', 'no-cache')
             self.send_header('Connection', 'keep-alive')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Origin', 'http://localhost:' + str(port))
             self.end_headers()
             last_mtime = 0.0
             projects_mtime = 0.0
@@ -1233,13 +1021,20 @@ def cmd_web_hud(args):
                 pass
 
         def _is_completed(self, state):
-            """判断任务是否已结束: current_stage 为空 或 无 PENDING/IN_PROGRESS 阶段"""
+            """任务已结束: current_stage 空 或 pipeline 无 PENDING/IN_PROGRESS"""
             if not state.get("current_stage"):
                 return True
-            pipeline = state.get("pipeline", [])
-            return not any(s.get("status") in ("PENDING", "IN_PROGRESS") for s in pipeline)
+            return _pipeline_is_terminal(state.get("pipeline", []))
 
-        def _project_info(self, proj_path, state):
+        def _project_info(self, proj_path, state, index_entry=None):
+            # 聚焦卡所需：最近一条活动 + 最后活跃时间
+            activity = state.get("activity", []) or []
+            last_activity = activity[-1] if activity else None
+            impl_stage = next((s for s in state.get("pipeline", []) if s.get("name") == "implement"), {})
+            phases = impl_stage.get("phases", []) if impl_stage else []
+            phase_total = len(phases)
+            phase_done = sum(1 for p in phases if p.get("status") == "DONE")
+            phase_current = next((p for p in phases if p.get("status") == "IN_PROGRESS"), None)
             return {
                 "path": str(proj_path),
                 "name": state.get("project", Path(proj_path).name),
@@ -1248,35 +1043,34 @@ def cmd_web_hud(args):
                 "session_id": state.get("session_id", ""),
                 "completed": self._is_completed(state),
                 "updated_at": state.get("updated_at", ""),
+                "finished_at": (index_entry or {}).get("finished_at"),
+                "last_activity": last_activity,
+                "phase_progress": {
+                    "done": phase_done,
+                    "total": phase_total,
+                    "current": phase_current.get("name") if phase_current else None,
+                } if phase_total else None,
             }
 
         def _find_all_projects(self):
+            """唯一事实源 = 中央索引。先 prune 再读，没有 fallback 扫盘。"""
+            index = prune_sessions()
             projects = []
             seen = set()
-            index = load_session_index()
             for sid in sorted(index, key=lambda k: index[k].get("started_at", ""), reverse=True):
-                proj = index[sid]["project"]
-                if proj in seen:
+                entry = index[sid]
+                proj = entry.get("project", "")
+                if not proj or proj in seen:
                     continue
                 sf = Path(proj) / ".claude" / "harness-state.json"
-                if sf.exists():
-                    try:
-                        state = json.loads(sf.read_text(encoding="utf-8"))
-                        projects.append(self._project_info(proj, state))
-                        seen.add(proj)
-                    except Exception:
-                        pass
-            # fallback 扫描
-            if not projects:
-                proj = find_latest_session_project()
-                if proj:
-                    sf = proj / ".claude" / "harness-state.json"
-                    if sf.exists():
-                        try:
-                            state = json.loads(sf.read_text(encoding="utf-8"))
-                            projects.append(self._project_info(proj, state))
-                        except Exception:
-                            pass
+                if not sf.exists():
+                    continue
+                try:
+                    state = json.loads(sf.read_text(encoding="utf-8"))
+                    projects.append(self._project_info(proj, state, entry))
+                    seen.add(proj)
+                except (OSError, json.JSONDecodeError):
+                    pass
             return projects
 
         def _load_project_state(self, proj_path):
@@ -1299,7 +1093,7 @@ def cmd_web_hud(args):
         def _json_response(self, data):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Origin', 'http://localhost:' + str(port))
             self.end_headers()
             self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
 
@@ -1321,33 +1115,11 @@ def cmd_web_hud(args):
 
 # ==================== Implement 模式检测 (C6 代码化) ====================
 
-def parse_phases_from_plan_file(project_root):
-    """从最新 plan 文件解析 Phase 列表"""
-    import re
-    plans_dir = project_root / ".claude" / "plans"
-    if not plans_dir.exists():
-        return []
-    plan_files = sorted(plans_dir.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
-    if not plan_files:
-        return []
-    text = plan_files[0].read_text(encoding="utf-8")
-    phases = []
-    pattern = r'^#{2,3}\s+(?:Phase|PHASE|Task|TASK|阶段|第)\s*(\d+)\s*(?:阶段)?\s*[：:.\-—]?\s*(.*?)$'
-    for m in re.finditer(pattern, text, re.MULTILINE | re.IGNORECASE):
-        num = int(m.group(1))
-        name = m.group(2).strip() or f"Phase {num}"
-        phases.append({
-            "name": f"Phase {num}: {name}" if name != f"Phase {num}" else name,
-            "status": "PENDING",
-            "error_count": 0,
-        })
-    return phases
-
 ORCHESTRATOR_THRESHOLD = 3  # Phase > 此值触发 Orchestrator 模式
 
 def cmd_detect_mode(args):
     """检测 implement 模式（C6: 代码化强制，不依赖 SKILL.md 建议）"""
-    phases = parse_phases_from_plan_file(PROJECT_ROOT)
+    phases = parse_phases_from_plan_dir(PROJECT_ROOT)
     mode = "orchestrator" if len(phases) > ORCHESTRATOR_THRESHOLD else "serial"
 
     def updater(state):
@@ -1498,6 +1270,58 @@ def cmd_worker_cleanup(args):
         shutil.rmtree(WORKERS_DIR, ignore_errors=True)
     print('{"cleaned": true}')
 
+# ==================== Sessions 管理（中央索引 CLI） ====================
+
+def cmd_sessions(args):
+    """操作中央 session 索引: list / prune / finalize / register"""
+    action = getattr(args, "session_action", None)
+    if action == "list":
+        index = prune_sessions()
+        rows = []
+        for sid, entry in sorted(index.items(), key=lambda kv: kv[1].get("started_at", ""), reverse=True):
+            proj = Path(entry.get("project", ""))
+            sf = proj / ".claude" / "harness-state.json"
+            row = {
+                "session_id": sid,
+                "project": str(proj),
+                "started_at": entry.get("started_at"),
+                "finished_at": entry.get("finished_at"),
+                "state_exists": sf.exists(),
+            }
+            if sf.exists():
+                try:
+                    st = json.loads(sf.read_text(encoding="utf-8"))
+                    row["current_stage"] = st.get("current_stage", "")
+                    row["task"] = st.get("task", {}).get("name", "")
+                except Exception:
+                    pass
+            rows.append(row)
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+    elif action == "prune":
+        grace = getattr(args, "grace", SESSION_GRACE_SEC)
+        before = load_session_index()
+        after = prune_sessions(grace_sec=grace)
+        removed = sorted(set(before) - set(after))
+        print(json.dumps({"removed": removed, "remaining": len(after)}, ensure_ascii=False, indent=2))
+    elif action == "finalize":
+        sid = getattr(args, "session_id", None)
+        if not sid:
+            print("ERROR: 需要 --session-id", file=sys.stderr)
+            sys.exit(1)
+        finalize_session(sid)
+        print(json.dumps({"finalized": sid}, ensure_ascii=False))
+    elif action == "register":
+        sid = getattr(args, "session_id", None)
+        proj = getattr(args, "project", None)
+        if not sid or not proj:
+            print("ERROR: 需要 --session-id 和 --project", file=sys.stderr)
+            sys.exit(1)
+        register_session(sid, Path(proj).resolve())
+        print(json.dumps({"registered": sid, "project": str(Path(proj).resolve())}, ensure_ascii=False))
+    else:
+        print("用法: harness.py sessions {list|prune|finalize|register}", file=sys.stderr)
+        sys.exit(1)
+
 # ==================== CLI 入口 ====================
 
 def main():
@@ -1513,9 +1337,10 @@ def main():
     p_init.add_argument("--module", default="")
     p_init.add_argument("--branch", default="")
     p_init.add_argument("--session-id", dest="session_id", default="")
+    p_init.set_defaults(func=cmd_init)
 
-    # check-continue (legacy, used by old stop-hook)
-    sub.add_parser("check-continue")
+    # check-continue
+    sub.add_parser("check-continue").set_defaults(func=cmd_check_continue)
 
     # update
     p_upd = sub.add_parser("update")
@@ -1525,29 +1350,34 @@ def main():
     p_upd.add_argument("--gate", action="append", default=[])
     p_upd.add_argument("--error", action="store_true")
     p_upd.add_argument("--auto-fixed", action="store_true")
+    p_upd.set_defaults(func=cmd_update)
 
-    # hud (basic)
+    # hud
     p_hud = sub.add_parser("hud")
     p_hud.add_argument("--watch", action="store_true")
     p_hud.add_argument("--rich", action="store_true", help="使用 Rich 库增强版")
     p_hud.add_argument("--project", default=None, help="指定项目目录")
+    p_hud.set_defaults(func=lambda a: cmd_rich_hud(a) if getattr(a, 'rich', False) else cmd_hud(a))
 
     # eval
     p_eval = sub.add_parser("eval")
     p_eval.add_argument("--report", action="store_true")
+    p_eval.set_defaults(func=cmd_eval)
 
     # autoloop-status
-    sub.add_parser("autoloop-status")
+    sub.add_parser("autoloop-status").set_defaults(func=cmd_autoloop_status)
 
     # autoloop-log
     p_alog = sub.add_parser("autoloop-log")
     p_alog.add_argument("--lines", type=int, default=20)
+    p_alog.set_defaults(func=cmd_autoloop_log)
 
     # web-hud
     p_web = sub.add_parser("web-hud")
     p_web.add_argument("--port", type=int, default=WEB_HUD_PORT)
-    p_web.add_argument("--project", default=None, help="指定项目目录（默认从 cwd 向上查找 .git）")
-    p_web.add_argument("--bind", default="127.0.0.1", help="绑定地址（默认 127.0.0.1，需外部访问时用 0.0.0.0）")
+    p_web.add_argument("--project", default=None)
+    p_web.add_argument("--bind", default="127.0.0.1")
+    p_web.set_defaults(func=cmd_web_hud)
 
     # worker-report
     p_wr = sub.add_parser("worker-report")
@@ -1555,59 +1385,40 @@ def main():
     p_wr.add_argument("--phase", required=True)
     p_wr.add_argument("--status", required=True)
     p_wr.add_argument("--branch", default="")
+    p_wr.set_defaults(func=cmd_worker_report)
 
     # worker-status
-    sub.add_parser("worker-status")
+    sub.add_parser("worker-status").set_defaults(func=cmd_worker_status)
 
     # worker-cleanup
-    sub.add_parser("worker-cleanup")
+    sub.add_parser("worker-cleanup").set_defaults(func=cmd_worker_cleanup)
 
-    # detect-mode (C6: 自动检测 implement 模式)
-    sub.add_parser("detect-mode")
+    # detect-mode
+    sub.add_parser("detect-mode").set_defaults(func=cmd_detect_mode)
 
-    # analyze-deps (C5: Orchestrator 依赖分析)
-    sub.add_parser("analyze-deps")
+    # analyze-deps
+    sub.add_parser("analyze-deps").set_defaults(func=cmd_analyze_deps)
 
-    # log (write autoloop log entry)
+    # sessions
+    p_sess = sub.add_parser("sessions")
+    p_sess.add_argument("session_action", choices=["list", "prune", "finalize", "register"])
+    p_sess.add_argument("--session-id", dest="session_id", default=None)
+    p_sess.add_argument("--project", default=None)
+    p_sess.add_argument("--grace", type=int, default=SESSION_GRACE_SEC)
+    p_sess.set_defaults(func=cmd_sessions)
+
+    # log
     p_log = sub.add_parser("log")
     p_log.add_argument("stage")
     p_log.add_argument("--phase", default="")
     p_log.add_argument("--action", default="execute")
     p_log.add_argument("--result", default="PASS")
     p_log.add_argument("--detail", default="")
+    p_log.set_defaults(func=lambda a: autoloop_log(a.stage, a.phase, a.action, a.result, a.detail))
 
     args = parser.parse_args()
-    if args.cmd == "init":
-        cmd_init(args)
-    elif args.cmd == "check-continue":
-        cmd_check_continue(args)
-    elif args.cmd == "update":
-        cmd_update(args)
-    elif args.cmd == "hud":
-        if getattr(args, 'rich', False):
-            cmd_rich_hud(args)
-        else:
-            cmd_hud(args)
-    elif args.cmd == "eval":
-        cmd_eval(args)
-    elif args.cmd == "autoloop-status":
-        cmd_autoloop_status(args)
-    elif args.cmd == "autoloop-log":
-        cmd_autoloop_log(args)
-    elif args.cmd == "web-hud":
-        cmd_web_hud(args)
-    elif args.cmd == "worker-report":
-        cmd_worker_report(args)
-    elif args.cmd == "worker-status":
-        cmd_worker_status(args)
-    elif args.cmd == "worker-cleanup":
-        cmd_worker_cleanup(args)
-    elif args.cmd == "detect-mode":
-        cmd_detect_mode(args)
-    elif args.cmd == "analyze-deps":
-        cmd_analyze_deps(args)
-    elif args.cmd == "log":
-        autoloop_log(args.stage, args.phase, args.action, args.result, args.detail)
+    if hasattr(args, 'func'):
+        args.func(args)
     else:
         parser.print_help()
 

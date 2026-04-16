@@ -14,7 +14,7 @@ tools:
 
 ## 工作流程
 
-1. 运行 `bash ~/.claude/plugins/dev-harness/scripts/detect-stack.sh` 检测构建系统
+1. 运行 `bash ${CLAUDE_PLUGIN_ROOT}/scripts/detect-stack.sh` 检测构建系统
 2. 如果项目有 `.claude/dev-config.yml`，优先用其中定义的门禁命令
 3. 依次执行: build → test → lint（如有）
 4. 汇总结果

@@ -1,16 +1,16 @@
-# Next.js 项目配置模板
+# Go 项目配置模板
 # 复制到项目根目录 .claude/dev-config.yml 后按需修改
 
-project: my-nextjs-app
-tech_stack: nextjs
+project: my-go-project
+tech_stack: go
 
 gates:
-  build: "npm run build"
-  test: "npm test"
-  lint: "npm run lint"
+  build: "go build ./..."
+  test: "go test ./..."
+  lint: "golangci-lint run"
 
 tdd: false
-default_profile: frontend
+default_profile: backend
 
 permissions:
   auto_fix: true
@@ -24,4 +24,3 @@ permissions:
 #   stage_timeout: 1800
 #   max_duration: 7200
 #   max_retries: 3
-#   max_auto_phases: 10

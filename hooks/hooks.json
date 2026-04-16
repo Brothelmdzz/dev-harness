@@ -40,6 +40,16 @@
             "timeout": 3000
           }
         ]
+      },
+      {
+        "matcher": "Write|Edit|Bash|Task",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import os,sys,subprocess,pathlib;r=os.environ.get('CLAUDE_PLUGIN_ROOT') or os.environ.get('CURSOR_PLUGIN_ROOT');sys.exit(0) if not r else None;root=pathlib.Path(r);venv=root/'.venv'/('Scripts/python.exe' if os.name=='nt' else 'bin/python');py=str(venv) if venv.exists() else sys.executable;hook=root/'hooks'/'activity-watcher.py';subprocess.run([py,str(hook)],input=sys.stdin.buffer.read() if not sys.stdin.isatty() else None) if hook.exists() else None\"",
+            "timeout": 3000
+          }
+        ]
       }
     ]
   }

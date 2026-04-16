@@ -10,54 +10,13 @@ from urllib.error import URLError
 
 # ==================== 配置 ====================
 
-def _find_project_root():
-    """向上查找 .git 目录定位项目根"""
-    env = os.environ.get("DH_PROJECT")
-    if env:
-        return Path(env).resolve()
-    p = Path.cwd()
-    while p != p.parent:
-        if (p / ".git").exists():
-            return p
-        p = p.parent
-    return Path.cwd()
+from lib.project import find_project_root as _find_project_root
+from lib.config import load_dev_config
 
 
 def _load_dev_config():
-    """读取 .claude/dev-config.yml（简易解析，不依赖 PyYAML）"""
-    config_file = _find_project_root() / ".claude" / "dev-config.yml"
-    if not config_file.exists():
-        return {}
-    try:
-        text = config_file.read_text(encoding="utf-8")
-        return _parse_simple_yaml(text)
-    except Exception:
-        return {}
-
-
-def _parse_simple_yaml(text):
-    """极简 YAML 解析器 — 仅支持顶层和一层嵌套的 key: value"""
-    result = {}
-    current_section = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        # 判断缩进层级
-        indent = len(line) - len(line.lstrip())
-        if indent == 0 and ":" in stripped:
-            key, _, val = stripped.partition(":")
-            val = val.strip().strip('"').strip("'")
-            if val:
-                result[key.strip()] = val
-            else:
-                current_section = key.strip()
-                result[current_section] = {}
-        elif indent > 0 and current_section and ":" in stripped:
-            key, _, val = stripped.partition(":")
-            val = val.strip().strip('"').strip("'")
-            result[current_section][key.strip()] = val
-    return result
+    """读取 .claude/dev-config.yml"""
+    return load_dev_config(_find_project_root())
 
 
 # ==================== 桌面通知 ====================

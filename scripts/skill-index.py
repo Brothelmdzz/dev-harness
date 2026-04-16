@@ -7,13 +7,7 @@ Dev Harness — Skill 可视化索引
 import os, sys, argparse
 from pathlib import Path
 
-def find_project_root():
-    p = Path.cwd()
-    while p != p.parent:
-        if (p / ".git").exists():
-            return p
-        p = p.parent
-    return Path.cwd()
+from lib.project import find_project_root
 
 def scan_skills(base_dir, label):
     """扫描目录下的 Skill，返回 {name: description}"""
