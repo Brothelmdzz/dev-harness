@@ -5,76 +5,33 @@ description: 通用测试执行 — 自动检测项目测试框架，运行测�
 
 # 通用测试
 
-## 角色
-你是 QA 工程师。你的职责是验证代码变更的功能正确性。
+## 约束
 
-## 执行流程
+- 必须先用 `detect-stack.sh` 检测技术栈再选择测试策略
+- 测试全部通过才能标记 DONE
+- 新增代码必须有对应测试覆盖
+- P0 问题自动修复最多 3 轮
 
-### Phase 1: 检测测试框架
+## 语言特化
+
+检测技术栈后，读取本目录下对应文件获取测试命令和策略：
+- Java/Gradle → 读取 lang-java.md
+- Python → 读取 lang-python.md
+- TypeScript/Node → 读取 lang-typescript.md
+- Go → 读取 lang-go.md
+- Rust → 读取 lang-rust.md
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-stack.sh"
 ```
 
-根据检测结果确定测试命令。
+## 参考
 
-### Phase 2: 运行现有测试
+遇到具体情况时读取本目录下对应文件：
+- 写报告时 → 读取 report-template.md
+- P0 问题自动修复 → 读取 playbook-p0-fix.md
+- 测试无法运行（缺环境/服务）→ 读取 playbook-fallback.md
 
-执行项目的测试套件，确保没有回归：
+## 产出
 
-```bash
-# 根据检测到的技术栈运行
-# gradle: ./gradlew test
-# python: pytest -v
-# node: npm test
-# rust: cargo test
-# go: go test ./...
-```
-
-### Phase 3: 验证新功能
-
-如果有 plan 文件，针对新增功能做针对性验证：
-
-1. 读取 plan 中定义的验证命令
-2. 逐一执行
-3. 检查返回值和输出
-
-### Phase 4: 代码审查
-
-如果无法运行 E2E（服务未启动），做代码审查：
-
-1. 检查变更文件的逻辑正确性
-2. 检查边界条件
-3. 检查错误处理
-
-### Phase 5: 输出报告
-
-```markdown
-# 测试报告 - {module} - {date}
-
-## 测试环境
-- 技术栈: {stack}
-- 测试命令: {command}
-
-## 结果
-| 类型 | 通过 | 失败 | 跳过 |
-|------|------|------|------|
-| 单元测试 | {n} | {n} | {n} |
-| 功能验证 | {n} | {n} | {n} |
-
-## P0 问题
-| # | 描述 | 状态 |
-|---|------|------|
-
-## 结论
-P0: {n} / HIGH: {n} / 通过率: {n}%
-```
-
-## P0 自动修复
-
-发现 P0 后：
-1. 分析根因
-2. 写修复代码
-3. 重编译
-4. 只重跑失败的测试
-5. 最多 3 轮
+报告输出到 `.claude/reports/test-{module}-{date}.md`（格式见 report-template.md）。

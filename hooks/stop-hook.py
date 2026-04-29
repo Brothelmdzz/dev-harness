@@ -16,7 +16,7 @@ v3.0 改进:
   - 防线 5: 滑动窗口频率限制 (5min 内 > 10 次 → 死循环)
   - 防线 6: error_count >= max_retries → 死循环
 """
-import json, sys, os
+import json, sys
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
@@ -25,6 +25,8 @@ _plugin_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_plugin_root / "scripts"))
 
 from lib.compat import FileLock
+from lib.state import save_state as _lib_save_state
+from lib.hook_trace import hook_start as _hook_start, hook_end as _hook_end, check_stale_hooks, log_stale_hooks
 
 # ==================== 默认常量（可通过 dev-config.yml 的 limits 段覆盖） ====================
 
@@ -145,6 +147,68 @@ def migrate_legacy_state(old):
         "_migrated_from": "legacy",
     }
 
+# ==================== 上下文摘要（注入 block reason） ====================
+
+def _build_context_summary(state, project_root):
+    """构建简洁的 Pipeline 上下文摘要，附加到 block reason 尾部。
+    最多 5 行，帮助 Claude 知道当前位置和已发生的事。"""
+    lines = []
+
+    # 1. Pipeline 进度一览
+    pipeline = state.get("pipeline", [])
+    if pipeline:
+        stage_parts = []
+        for s in pipeline:
+            name = s.get("name", "?")
+            status = s.get("status", "PENDING")
+            current = state.get("current_stage", "")
+            if status == "DONE":
+                tag = "DONE"
+            elif status == "IN_PROGRESS":
+                # implement 阶段附加 phase 进度
+                phases = s.get("phases", [])
+                if phases:
+                    done_count = sum(1 for p in phases if p.get("status") == "DONE")
+                    tag = f"IN_PROGRESS {done_count}/{len(phases)}"
+                else:
+                    tag = "IN_PROGRESS"
+            elif status == "SKIP":
+                tag = "SKIP"
+            elif status == "FAILED":
+                tag = "FAILED"
+            else:
+                tag = "PENDING"
+            stage_parts.append(f"{name}[{tag}]")
+        lines.append("Pipeline: " + " → ".join(stage_parts))
+
+    # 2. 当前 Phase 进度（仅 implement 阶段）
+    current_stage_name = state.get("current_stage", "")
+    if current_stage_name == "implement":
+        stage_obj = next((s for s in pipeline if s["name"] == "implement"), None)
+        if stage_obj:
+            phases = stage_obj.get("phases", [])
+            if phases:
+                phase_details = []
+                for p in phases:
+                    pname = p.get("name", "?")
+                    pstatus = p.get("status", "PENDING")
+                    gates = p.get("gates", {})
+                    if gates and pstatus == "DONE":
+                        gate_str = " ".join(f"{k}={v}" for k, v in gates.items())
+                        phase_details.append(f"{pname}: {pstatus} (gates: {gate_str})")
+                    else:
+                        phase_details.append(f"{pname}: {pstatus}")
+                lines.append("Phases: " + " | ".join(phase_details))
+
+    # 3. 累计错误
+    error_count = state.get("metrics", {}).get("total_errors", 0)
+    if error_count > 0:
+        lines.append(f"累计错误: {error_count}")
+
+    if not lines:
+        return ""
+    return "\n\n当前状态:\n" + "\n".join("- " + l for l in lines)
+
 # ==================== 主逻辑 ====================
 
 def _handle_implement_continue(state, stage, project_root, state_file, max_retries, source=""):
@@ -232,6 +296,12 @@ def main():
         project_root = Path(hook_cwd)
     else:
         project_root = find_project_root()
+
+    # hook 超时追踪：检测上次残留 + 记录本次开始
+    stale = check_stale_hooks(project_root)
+    if stale:
+        log_stale_hooks(project_root, stale)
+    _hook_start("stop-hook", project_root)
 
     state_file = project_root / ".claude" / "harness-state.json"
     eval_log = project_root / ".claude" / "harness-eval.jsonl"
@@ -485,19 +555,18 @@ def find_next(pipeline, current_name):
     return _lib_find_next(pipeline, current_name)
 
 def output_block(reason, state, project_root):
+    ctx = _build_context_summary(state, project_root)
+    if ctx:
+        reason = reason + ctx
     decision = {"decision": "block", "reason": reason}
     print(json.dumps(decision, ensure_ascii=False))
     log_eval(project_root, state, "auto_continue", reason)
 
 def save_state(state, path):
-    """原子化写入 state（先写 .tmp 再 os.replace，防损坏）"""
-    state["updated_at"] = now_iso()
+    """原子化写入 state — 委托给 lib.state"""
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_file = path.with_suffix(".json.tmp")
-    lock = FileLock(str(path) + ".lock", timeout=10)
-    with lock:
-        tmp_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(str(tmp_file), str(path))
+    _lib_save_state(path, state)
 
 
 def _finalize_session_in_index(session_id):
@@ -514,12 +583,22 @@ def _finalize_session_in_index(session_id):
             index = json.loads(index_file.read_text(encoding="utf-8"))
             if session_id in index and not index[session_id].get("finished_at"):
                 index[session_id]["finished_at"] = now_iso()
-                index_file.write_text(
+                import os as _os
+                tmp = index_file.with_suffix(".json.tmp")
+                tmp.write_text(
                     json.dumps(index, ensure_ascii=False, indent=2),
                     encoding="utf-8"
                 )
+                _os.replace(str(tmp), str(index_file))
     except Exception:
-        pass  # 兜底逻辑静默失败，不阻断 hook
+        pass
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # 正常退出时清理 breadcrumb；被超时杀掉时 breadcrumb 残留供下次检测
+        try:
+            _hook_end("stop-hook", _lib_find_project_root(scan_fallback=True))
+        except Exception:
+            pass

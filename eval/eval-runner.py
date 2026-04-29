@@ -10,6 +10,12 @@ import json, os, sys, time, subprocess, argparse
 from pathlib import Path
 from datetime import datetime
 
+# Windows 控制台默认 GBK，遇到 UTF-8 替换字符 (U+FFFD) 会 crash
+if sys.stdout and hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if sys.stderr and hasattr(sys.stderr, 'reconfigure'):
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 EVAL_DIR = Path(__file__).parent
 SCENARIOS_DIR = EVAL_DIR / "scenarios"
 RESULTS_DIR = EVAL_DIR / "results"
@@ -79,6 +85,10 @@ METRICS = {
         "description": "v3.4: Pipeline 显式依赖 (depends_on DAG)",
         "weight": 1.5,
     },
+    "v34_safety": {
+        "description": "v3.4: filelock 安全门 + 原子写入 + hook 超时追踪",
+        "weight": 2.0,
+    },
 }
 
 HOOK_SCRIPT = Path(__file__).parent.parent / "hooks" / "stop-hook.py"
@@ -96,7 +106,7 @@ class CmdResult(tuple):
 
 def run_cmd(cmd, cwd=None):
     """执行命令并返回 CmdResult（支持 out, rc = run_cmd(...) 解包 + .stderr 访问）"""
-    env = {**os.environ, "DH_EVAL": "1"}
+    env = {**os.environ, "DH_EVAL": "1", "PYTHONIOENCODING": "utf-8"}
     # Windows 上 bash 脚本必须通过 shell=True（cmd.exe 正确路由 Git Bash 环境）
     # eval-runner 内部路径全受控，无注入风险
     use_shell = isinstance(cmd, str) and os.name == "nt"
@@ -109,7 +119,7 @@ def run_cmd(cmd, cwd=None):
 
 def run_script_with_stdin(script, stdin_data, cwd=None):
     """通过 stdin 传入数据运行 Python 脚本"""
-    env = {**os.environ, "DH_EVAL": "1"}
+    env = {**os.environ, "DH_EVAL": "1", "PYTHONIOENCODING": "utf-8"}
     cmd = f"python {script}" if os.name == "nt" else ["python", str(script)]
     result = subprocess.run(
         cmd, shell=(os.name == "nt"), capture_output=True, text=True,
@@ -431,10 +441,11 @@ def _read_state(tmpdir):
 def _run_hook(tmpdir, hook_input=None):
     """运行 stop-hook.py，通过 stdin 传入 hook_input JSON"""
     inp = json.dumps(hook_input or {})
+    env = {**os.environ, "DH_EVAL": "1", "PYTHONIOENCODING": "utf-8"}
     result = subprocess.run(
         ["python", str(HOOK_SCRIPT)],
         input=inp, capture_output=True, text=True,
-        encoding="utf-8", errors="replace", cwd=tmpdir
+        encoding="utf-8", errors="replace", cwd=tmpdir, env=env
     )
     return result.stdout.strip(), result.returncode
 
@@ -1120,6 +1131,117 @@ def test_depends_on():
     shutil.rmtree(tmpdir, ignore_errors=True)
     return {"metric": "depends_on", "results": results}
 
+# ==================== 新增: v3.4 安全性测试 ====================
+
+def test_v34_safety():
+    """测试 v3.4 安全特性: filelock 安全门 + 原子写入 + hook 超时面包屑"""
+    import shutil, tempfile
+    results = []
+
+    lib_dir = str(Path(__file__).parent.parent / "scripts")
+
+    # 测试 1: require_filelock 在有 filelock 时正常通过
+    out, rc = run_cmd(
+        f'python -c "import sys; sys.path.insert(0, r\'{lib_dir}\'); from lib.compat import require_filelock; require_filelock(\'test\'); print(\'OK\')"'
+    )
+    results.append({
+        "test": "require_filelock_passes",
+        "pass": rc == 0 and "OK" in out,
+        "detail": f"rc={rc}, out={out[:40]}"
+    })
+
+    # 测试 2: HAS_FILELOCK 标志正确导出
+    out, rc = run_cmd(
+        f'python -c "import sys; sys.path.insert(0, r\'{lib_dir}\'); from lib.compat import HAS_FILELOCK; print(HAS_FILELOCK)"'
+    )
+    results.append({
+        "test": "has_filelock_flag",
+        "pass": rc == 0 and "True" in out,
+        "detail": f"HAS_FILELOCK={out.strip()}"
+    })
+
+    # 测试 3: hook_start 创建 breadcrumb 文件
+    tmpdir = _make_test_env()
+    out, rc = run_cmd(
+        f'python -c "import sys; sys.path.insert(0, r\'{lib_dir}\'); from lib.hook_trace import hook_start; hook_start(\'test-hook\', r\'{tmpdir}\'); print(\'OK\')"'
+    )
+    bc_file = Path(tmpdir) / ".claude" / ".hook-test-hook.running"
+    results.append({
+        "test": "hook_start_creates_breadcrumb",
+        "pass": rc == 0 and bc_file.exists(),
+        "detail": f"file_exists={bc_file.exists()}"
+    })
+
+    # 测试 4: hook_end 删除 breadcrumb 文件
+    out, rc = run_cmd(
+        f'python -c "import sys; sys.path.insert(0, r\'{lib_dir}\'); from lib.hook_trace import hook_end; hook_end(\'test-hook\', r\'{tmpdir}\'); print(\'OK\')"'
+    )
+    results.append({
+        "test": "hook_end_removes_breadcrumb",
+        "pass": rc == 0 and not bc_file.exists(),
+        "detail": f"file_exists={bc_file.exists()}"
+    })
+
+    # 测试 5: check_stale_hooks 检测并清理残留
+    # 手动创建一个 stale breadcrumb
+    bc_file.parent.mkdir(parents=True, exist_ok=True)
+    bc_file.write_text('{"hook": "stale-hook", "started_at": "2020-01-01T00:00:00Z"}', encoding="utf-8")
+    out, rc = run_cmd(
+        f'python -c "'
+        f"import sys, json; sys.path.insert(0, r'{lib_dir}'); "
+        f"from lib.hook_trace import check_stale_hooks; "
+        f"stale = check_stale_hooks(r'{tmpdir}'); "
+        f"print(json.dumps({{'count': len(stale), 'hooks': [s.get(chr(104)+chr(111)+chr(111)+chr(107)) for s in stale]}}))"
+        f'"'
+    )
+    stale_gone = not bc_file.exists()
+    try:
+        info = json.loads(out)
+        found_stale = info.get("count", 0) == 1
+    except (json.JSONDecodeError, ValueError):
+        found_stale = False
+    results.append({
+        "test": "check_stale_hooks_detects_and_cleans",
+        "pass": found_stale and stale_gone,
+        "detail": f"found={found_stale}, cleaned={stale_gone}, out={out[:60]}"
+    })
+
+    # 测试 6: _finalize_session_in_index 使用原子写入（检查 .tmp 模式）
+    # 通过 grep stop-hook.py 验证 os.replace 在 _finalize 函数中
+    stop_hook_path = Path(__file__).parent.parent / "hooks" / "stop-hook.py"
+    stop_hook_src = stop_hook_path.read_text(encoding="utf-8")
+    # 找到 _finalize_session_in_index 函数体
+    func_start = stop_hook_src.find("def _finalize_session_in_index")
+    func_body = stop_hook_src[func_start:func_start+1000] if func_start >= 0 else ""
+    has_atomic = "os.replace" in func_body or "_os.replace" in func_body
+    has_no_direct_write = "index_file.write_text" not in func_body
+    results.append({
+        "test": "finalize_session_atomic_write",
+        "pass": has_atomic and has_no_direct_write,
+        "detail": f"has_os_replace={has_atomic}, no_direct_write={has_no_direct_write}"
+    })
+
+    # 测试 7: detect-mode 在有 filelock 时 orchestrator 模式正常工作
+    tmpdir2 = _make_test_env()
+    run_cmd(f"python {HARNESS_SCRIPT} init dm-safe-test --route C", cwd=tmpdir2)
+    plans_dir = Path(tmpdir2) / ".claude" / "plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    (plans_dir / "plan.md").write_text(
+        "# Plan\n## Phase 1: A\n## Phase 2: B\n## Phase 3: C\n## Phase 4: D\n",
+        encoding="utf-8"
+    )
+    out, rc = run_cmd(f"python {HARNESS_SCRIPT} detect-mode", cwd=tmpdir2)
+    results.append({
+        "test": "detect_mode_with_filelock",
+        "pass": rc == 0 and "orchestrator" in out,
+        "detail": f"rc={rc}, out={out[:60]}"
+    })
+
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    shutil.rmtree(tmpdir2, ignore_errors=True)
+    return {"metric": "v34_safety", "results": results}
+
+
 ALL_TESTS = {
     "skill_resolution": test_skill_resolution,
     "state_management": test_state_management,
@@ -1136,6 +1258,7 @@ ALL_TESTS = {
     "v33_features": test_v33_features,
     "limits_config": test_limits_config,
     "depends_on": test_depends_on,
+    "v34_safety": test_v34_safety,
 }
 
 def run_scenario(name):
@@ -1220,7 +1343,7 @@ def run_all():
     }
     result_file = RESULTS_DIR / f"eval-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     result_file.parent.mkdir(parents=True, exist_ok=True)
-    result_file.write_text(json.dumps(report, ensure_ascii=False, indent=2))
+    result_file.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n  结果已保存: {result_file}")
 
     return report

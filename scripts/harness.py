@@ -11,7 +11,7 @@ import json, os, sys, time, argparse, uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from lib.compat import FileLock
+from lib.compat import FileLock, require_filelock
 from lib.project import find_project_root
 from lib.utils import now_iso, parse_iso as _parse_iso
 from lib.config import parse_simple_yaml as _parse_simple_yaml
@@ -869,249 +869,17 @@ def cmd_rich_hud(args):
 
 WEB_HUD_PORT = 1603
 
-def _load_web_hud_html():
-    """从独立文件加载 Web HUD 前端 HTML"""
-    html_path = Path(__file__).resolve().parent / "web_hud.html"
-    return html_path.read_text(encoding="utf-8")
-
-def _load_web_hud_html():
-    """从独立文件加载 Web HUD 前端 HTML"""
-    html_path = Path(__file__).resolve().parent / "web_hud.html"
-    return html_path.read_text(encoding="utf-8")
-
-def _scan_eval_results():
-    """扫描 eval/results/eval-*.json，返回按时间排序的评测历史"""
-    eval_dir = Path(__file__).resolve().parent.parent / "eval" / "results"
-    if not eval_dir.exists():
-        return []
-    history = []
-    for f in sorted(eval_dir.glob("eval-*.json")):
-        try:
-            # 部分旧文件可能包含非 UTF-8 字符（GBK 等），做 fallback
-            try:
-                raw = f.read_text(encoding="utf-8")
-            except UnicodeDecodeError:
-                raw = f.read_text(encoding="utf-8", errors="replace")
-            data = json.loads(raw)
-            summary = data.get("summary", {})
-            ts = data.get("timestamp", "")
-            date_str = ts[:10] if ts else f.stem.replace("eval-", "")[:8]
-            if len(date_str) == 8 and "-" not in date_str:
-                date_str = date_str[:4] + "-" + date_str[4:6] + "-" + date_str[6:8]
-            total = summary.get("total_tests", 0)
-            passed = summary.get("total_pass", 0)
-            score = summary.get("weighted_score", 0)
-            history.append({
-                "date": date_str,
-                "score": round(score, 4),
-                "pass_count": passed,
-                "total": total,
-                "pass_rate": round(passed / total, 4) if total > 0 else 0,
-            })
-        except Exception:
-            pass
-    return history
-
-
-def _inject_workers_into_state(state, proj_path):
-    """将 workers 目录下的 worker 状态注入 implement 阶段的 state 中"""
-    if not state:
-        return state
-    workers_dir = Path(proj_path) / ".claude" / "workers" if proj_path else WORKERS_DIR
-    if not workers_dir.exists():
-        return state
-    workers = []
-    for f in sorted(workers_dir.glob("worker-*.json")):
-        try:
-            w = json.loads(f.read_text(encoding="utf-8"))
-            workers.append(w)
-        except Exception:
-            pass
-    if workers:
-        for s in state.get("pipeline", []):
-            if s["name"] == "implement":
-                s["workers"] = workers
-                break
-    return state
-
 
 def cmd_web_hud(args):
-    """启动多项目 Web HUD 面板（SSE 实时推送 + 轮询 fallback）"""
-    from http.server import HTTPServer, BaseHTTPRequestHandler
-    import urllib.parse
-    import threading
-
-    port = args.port or WEB_HUD_PORT
-
-    class HUDHandler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            parsed = urllib.parse.urlparse(self.path)
-
-            if parsed.path == '/api/projects':
-                projects = self._find_all_projects()
-                self._json_response(projects)
-
-            elif parsed.path == '/api/state':
-                params = urllib.parse.parse_qs(parsed.query)
-                proj_path = params.get("project", [None])[0]
-                state = self._load_project_state(proj_path)
-                if state:
-                    state = _inject_workers_into_state(state, proj_path)
-                    self._json_response(state)
-                else:
-                    self.send_response(404)
-                    self.end_headers()
-
-            elif parsed.path == '/api/events':
-                # SSE 端点：检测 harness-state.json 的 mtime，变化时推送
-                params = urllib.parse.parse_qs(parsed.query)
-                proj_path = params.get("project", [None])[0]
-                self._handle_sse(proj_path)
-
-            elif parsed.path == '/api/eval-history':
-                history = _scan_eval_results()
-                self._json_response(history)
-
-            else:
-                self.send_response(200)
-                self.send_header('Content-Type', 'text/html; charset=utf-8')
-                self.end_headers()
-                self.wfile.write(_load_web_hud_html().encode('utf-8'))
-
-        def _handle_sse(self, proj_path):
-            """Server-Sent Events：循环检测 mtime，变化时推送 state"""
-            if proj_path:
-                sf = Path(proj_path) / ".claude" / "harness-state.json"
-            else:
-                sf = STATE_FILE
-            self.send_response(200)
-            self.send_header('Content-Type', 'text/event-stream')
-            self.send_header('Cache-Control', 'no-cache')
-            self.send_header('Connection', 'keep-alive')
-            self.send_header('Access-Control-Allow-Origin', 'http://localhost:' + str(port))
-            self.end_headers()
-            last_mtime = 0.0
-            projects_mtime = 0.0
-            try:
-                while True:
-                    try:
-                        cur_mtime = sf.stat().st_mtime if sf.exists() else 0.0
-                    except OSError:
-                        cur_mtime = 0.0
-                    if cur_mtime > last_mtime:
-                        last_mtime = cur_mtime
-                        state = self._load_project_state(
-                            proj_path if proj_path else None
-                        )
-                        if state:
-                            state = _inject_workers_into_state(state, proj_path)
-                            payload = json.dumps(state, ensure_ascii=False)
-                            self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
-                            self.wfile.flush()
-                    # 每 10 秒推送一次项目列表
-                    now_ts = time.time()
-                    if now_ts - projects_mtime > 10:
-                        projects_mtime = now_ts
-                        projs = self._find_all_projects()
-                        payload = json.dumps(projs, ensure_ascii=False)
-                        self.wfile.write(f"event: projects\ndata: {payload}\n\n".encode("utf-8"))
-                        self.wfile.flush()
-                    time.sleep(0.5)
-            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
-                pass
-
-        def _is_completed(self, state):
-            """任务已结束: current_stage 空 或 pipeline 无 PENDING/IN_PROGRESS"""
-            if not state.get("current_stage"):
-                return True
-            return _pipeline_is_terminal(state.get("pipeline", []))
-
-        def _project_info(self, proj_path, state, index_entry=None):
-            # 聚焦卡所需：最近一条活动 + 最后活跃时间
-            activity = state.get("activity", []) or []
-            last_activity = activity[-1] if activity else None
-            impl_stage = next((s for s in state.get("pipeline", []) if s.get("name") == "implement"), {})
-            phases = impl_stage.get("phases", []) if impl_stage else []
-            phase_total = len(phases)
-            phase_done = sum(1 for p in phases if p.get("status") == "DONE")
-            phase_current = next((p for p in phases if p.get("status") == "IN_PROGRESS"), None)
-            return {
-                "path": str(proj_path),
-                "name": state.get("project", Path(proj_path).name),
-                "task": state.get("task", {}).get("name", ""),
-                "current_stage": state.get("current_stage", ""),
-                "session_id": state.get("session_id", ""),
-                "completed": self._is_completed(state),
-                "updated_at": state.get("updated_at", ""),
-                "finished_at": (index_entry or {}).get("finished_at"),
-                "last_activity": last_activity,
-                "phase_progress": {
-                    "done": phase_done,
-                    "total": phase_total,
-                    "current": phase_current.get("name") if phase_current else None,
-                } if phase_total else None,
-            }
-
-        def _find_all_projects(self):
-            """唯一事实源 = 中央索引。先 prune 再读，没有 fallback 扫盘。"""
-            index = prune_sessions()
-            projects = []
-            seen = set()
-            for sid in sorted(index, key=lambda k: index[k].get("started_at", ""), reverse=True):
-                entry = index[sid]
-                proj = entry.get("project", "")
-                if not proj or proj in seen:
-                    continue
-                sf = Path(proj) / ".claude" / "harness-state.json"
-                if not sf.exists():
-                    continue
-                try:
-                    state = json.loads(sf.read_text(encoding="utf-8"))
-                    projects.append(self._project_info(proj, state, entry))
-                    seen.add(proj)
-                except (OSError, json.JSONDecodeError):
-                    pass
-            return projects
-
-        def _load_project_state(self, proj_path):
-            if proj_path:
-                # C4 修复: 白名单限制 — 只允许访问已注册的项目路径
-                allowed = {p.get("path", "") for p in self._find_all_projects()}
-                resolved = str(Path(proj_path).resolve())
-                if resolved not in {str(Path(a).resolve()) for a in allowed}:
-                    return None
-                sf = Path(proj_path) / ".claude" / "harness-state.json"
-            else:
-                sf = STATE_FILE
-            try:
-                lock = FileLock(str(sf) + ".lock", timeout=2)
-                with lock:
-                    return json.loads(sf.read_text(encoding="utf-8"))
-            except Exception:
-                return None
-
-        def _json_response(self, data):
-            self.send_response(200)
-            self.send_header('Content-Type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', 'http://localhost:' + str(port))
-            self.end_headers()
-            self.wfile.write(json.dumps(data, ensure_ascii=False).encode('utf-8'))
-
-        def log_message(self, format, *a):
-            pass
-
-    # 使用 ThreadingHTTPServer 以支持 SSE 长连接 + 并发请求
-    from http.server import ThreadingHTTPServer
-    bind_addr = getattr(args, 'bind', None) or '127.0.0.1'
-    server = ThreadingHTTPServer((bind_addr, port), HUDHandler)
-    server.daemon_threads = True
-    print(f"Dev Harness Web HUD: http://{bind_addr}:{port}")
-    print("SSE realtime + polling fallback | Ctrl+C stop")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        server.shutdown()
-        print("\nWeb HUD stopped")
+    """启动多项目 Web HUD 面板 — 委托给 web_hud 模块"""
+    from web_hud import start_web_hud
+    start_web_hud(
+        port=args.port or WEB_HUD_PORT,
+        bind=getattr(args, 'bind', None) or '127.0.0.1',
+        prune_sessions_fn=prune_sessions,
+        load_state_fn=load_state,
+        state_file=STATE_FILE,
+    )
 
 # ==================== Implement 模式检测 (C6 代码化) ====================
 
@@ -1121,6 +889,9 @@ def cmd_detect_mode(args):
     """检测 implement 模式（C6: 代码化强制，不依赖 SKILL.md 建议）"""
     phases = parse_phases_from_plan_dir(PROJECT_ROOT)
     mode = "orchestrator" if len(phases) > ORCHESTRATOR_THRESHOLD else "serial"
+
+    if mode == "orchestrator":
+        require_filelock("Orchestrator 多 Worker 并行")
 
     def updater(state):
         for s in state["pipeline"]:

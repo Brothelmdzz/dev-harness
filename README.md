@@ -50,7 +50,7 @@ bash ~/.claude/plugins/dev-harness/scripts/setup.sh
 首次启动新会话时，SessionStart Hook 会自动检测环境。如果 venv 未初始化，会提示运行 setup.sh。
 
 ```bash
-# 可选：运行完整评测（43 用例，12 维度）
+# 可选：运行完整评测（50 用例，15 维度）
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" --with-eval
 ```
 
@@ -136,26 +136,31 @@ Dev Harness 提供 **3 种运行模式**和 **6 个入口命令**，按任务规
 
 全部 **Opus** 模型：architect, planner, code-reviewer, security-reviewer, executor, debugger, qa-tester, auto-loop, wiki-syncer, explore, gate-checker, skill-router
 
-### Hooks (3)
+### Hooks (4)
 
 | Hook | 事件 | 作用 |
 |------|------|------|
-| `session-init.sh` | SessionStart | 检测 venv，未初始化时引导用户 |
+| `session-init.py` | SessionStart | 检测 venv，未初始化时引导用户 |
 | `stop-hook.py` | Stop | 六道防线阻止 Pipeline 中途停下 |
 | `plan-watcher.py` | PostToolUse(Write/Edit) | Plan 文件写入时自动注册 phases |
+| `activity-watcher.py` | PostToolUse(Write/Edit/Bash/Task) | 记录工具调用到 activity 环形缓冲，Web HUD 实时展示 |
 
-### Scripts (8)
+### Scripts (12)
 
 | 脚本 | 作用 |
 |------|------|
 | `dh-python.sh` | 统一 Python 入口（优先 venv → fallback 系统） |
-| `harness.py` | 状态管理 + Web HUD + Worker 管理 |
+| `harness.py` | 状态管理 + HUD 面板 + Worker 管理 |
+| `web_hud.py` | Web HUD 服务器（从 harness.py 拆分） |
 | `skill-resolver.py` | 三层 Skill 解析 |
 | `detect-stack.sh` | 技术栈自动检测 |
 | `worktree.sh` | Git Worktree 隔离 |
 | `setup.sh` | 安装验证 + venv 初始化 |
 | `scaffold.sh` | Skill 脚手架生成 |
 | `fix-hook-path.sh` | 修复升级后 hook 路径失效 |
+| `notify.py` | 桌面通知 + 飞书 Webhook |
+| `team-report.py` | 多项目团队看板 |
+| `lib/` | 共享库：state / compat / pipeline / plan / project / config / utils / hook_trace |
 
 ---
 
@@ -234,6 +239,8 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts
 | 5 | 5 分钟内 > 10 次续跑 | 放行（死循环） |
 | 6 | error_count >= 3 | 放行 |
 
+v3.4 新增：Hook 超时面包屑追踪 -- 每个 hook 启动时写 `.hook-{name}.running`，正常退出时删除。残留文件 = 被超时杀掉的证据，下次 stop-hook 启动时自动检测并记录到 eval log。
+
 ---
 
 ## Deterministic Phases Registration
@@ -260,6 +267,15 @@ skill_overrides:
 ```
 
 模板：`bash "${CLAUDE_PLUGIN_ROOT}/scripts/scaffold.sh" --config springboot`
+
+v3.4 新增 `limits` 配置：
+
+```yaml
+limits:
+  stage_timeout: 2400     # 单阶段超时（秒），默认 1800
+  max_duration: 14400     # 总运行时长（秒），默认 7200
+  max_retries: 5          # 最大重试次数，默认 3
+```
 
 ---
 
@@ -305,6 +321,18 @@ bash sync-plugin-meta.sh [3.4.0]
 
 ---
 
+## v3.4 Notable Changes
+
+- **共享库** (`scripts/lib/`): 消除 14 处代码重复，统一 state 读写、项目根发现、DAG 遍历、Phase 解析
+- **原子状态写入**: 所有 `harness-state.json` 写入路径统一使用 `.tmp` + `os.replace()`，防止 hook 超时导致文件损坏
+- **Pipeline DAG**: `depends_on` 字段声明阶段显式依赖，拓扑排序 + 环检测
+- **防线参数可配**: `dev-config.yml` 的 `limits` 段覆盖六道防线参数，自动 clamp 到合法范围
+- **filelock 安全门**: 并行模式（Orchestrator）启动前强制检测 `filelock` 依赖，缺失时拒绝进入
+- **Hook 超时追踪**: 面包屑机制检测被超时杀掉的 hook，记录到 eval log
+- **Web HUD 拆分**: HTTP 服务器从 `harness.py` 拆到独立的 `web_hud.py`
+
+---
+
 ## Troubleshooting
 
 ### 插件升级后 Hook 路径失效
@@ -326,11 +354,11 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/fix-hook-path.sh"
 ## Evaluation
 
 ```bash
-# 43 用例，12 维度
+# 50 用例，15 维度
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" --with-eval
 ```
 
-维度：skill_resolution / state_management / auto_continue / gate_detection / pipeline_routing / hook_defense / session_isolation / skill_override / parallel_group / worker_management / plan_watcher / phases_fallback
+维度：skill_resolution / state_management / auto_continue / gate_detection / pipeline_routing / hook_defense / session_isolation / skill_override / parallel_group / worker_management / plan_watcher / phases_fallback / v33_features / limits_config / depends_on
 
 ---
 

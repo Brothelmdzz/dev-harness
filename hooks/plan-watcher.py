@@ -5,15 +5,16 @@
 Claude 可能跳过注册导致 stop-hook 看到 phases=[] 无法续跑。
 此 hook 在代码层面保证：只要 plan 文件写了，phases 就一定注册。
 """
-import json, sys, os, re
+import json, sys, re
 from pathlib import Path
-from datetime import datetime, timezone
 
 # 让 hooks 能 import scripts/lib/
 _plugin_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_plugin_root / "scripts"))
 
 from lib.plan import parse_phases
+from lib.state import load_and_update_state
+from lib.hook_trace import hook_start as _hook_start, hook_end as _hook_end
 
 def parse_phases_from_plan(plan_path):
     """从 plan 文件解析 Phase 列表（委托给 lib.plan）"""
@@ -63,32 +64,35 @@ def main():
     if not state_file.exists():
         sys.exit(0)
 
-    # 更新 state 中的 implement phases（filelock 保护）
-    from lib.compat import FileLock
-    lock = FileLock(str(state_file) + ".lock", timeout=5)
+    _hook_start("plan-watcher", project_root)
 
-    with lock:
-        try:
-            state = json.loads(state_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, FileNotFoundError):
-            sys.exit(0)
+    # 更新 state 中的 implement phases（原子化 read-modify-write）
+    try:
+        def _update(state):
+            for s in state.get("pipeline", []):
+                if s["name"] == "implement":
+                    existing = s.get("phases", [])
+                    if not existing or len(existing) != len(phases):
+                        for i, new_p in enumerate(phases):
+                            if i < len(existing):
+                                new_p["status"] = existing[i].get("status", "PENDING")
+                                new_p["error_count"] = existing[i].get("error_count", 0)
+                        s["phases"] = phases
+                    break
 
-        for s in state.get("pipeline", []):
-            if s["name"] == "implement":
-                existing = s.get("phases", [])
-                # 只在 phases 为空或数量不匹配时更新（避免覆盖已有进度）
-                if not existing or len(existing) != len(phases):
-                    for i, new_p in enumerate(phases):
-                        if i < len(existing):
-                            new_p["status"] = existing[i].get("status", "PENDING")
-                            new_p["error_count"] = existing[i].get("error_count", 0)
-                    s["phases"] = phases
-                break
-
-        state["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        tmp_file = state_file.with_suffix(".json.tmp")
-        tmp_file.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(str(tmp_file), str(state_file))
+        load_and_update_state(state_file, _update)
+    except Exception:
+        sys.exit(0)
 
 if __name__ == "__main__":
-    main()
+    _project_root = None
+    try:
+        main()
+    finally:
+        try:
+            from lib.project import find_project_root as _find_root
+            _project_root = _find_root()
+            if _project_root:
+                _hook_end("plan-watcher", _project_root)
+        except Exception:
+            pass

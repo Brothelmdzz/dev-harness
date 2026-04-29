@@ -14,9 +14,8 @@
   - Write/Edit 记录相对项目根的文件路径
   - Task 记录 subagent_type + 简短 description
 """
-import json, sys, os, re
+import json, sys, re
 from pathlib import Path
-from datetime import datetime, timezone
 
 # 让 hooks 能 import scripts/lib/
 _plugin_root = Path(__file__).resolve().parent.parent
@@ -29,7 +28,8 @@ SENSITIVE_PATTERN = re.compile(r'(password|token|secret|apikey|api_key|authoriza
 
 from lib.utils import now_iso
 from lib.project import find_project_root as _lib_find_project_root
-from lib.compat import FileLock
+from lib.state import load_and_update_state
+from lib.hook_trace import hook_start as _hook_start, hook_end as _hook_end
 
 
 def extract_activity(tool_name, tool_input):
@@ -90,6 +90,8 @@ def main():
     if not state_file.exists():
         sys.exit(0)
 
+    _hook_start("activity-watcher", project_root)
+
     # 相对路径美化
     if activity.get("full_path"):
         try:
@@ -98,15 +100,8 @@ def main():
         except ValueError:
             pass
 
-    lock = FileLock(str(state_file) + ".lock", timeout=3)
-
     try:
-        with lock:
-            try:
-                state = json.loads(state_file.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, FileNotFoundError):
-                sys.exit(0)
-
+        def _update(state):
             buf = state.get("activity", [])
             if not isinstance(buf, list):
                 buf = []
@@ -121,21 +116,24 @@ def main():
                 entry["summary"] = activity["summary"][:200]
 
             buf.append(entry)
-            # 环形缓冲：超限截断最旧
             if len(buf) > ACTIVITY_MAX:
                 buf = buf[-ACTIVITY_MAX:]
             state["activity"] = buf
             state["last_activity_at"] = entry["ts"]
-            state["updated_at"] = entry["ts"]
 
-            state_file.write_text(
-                json.dumps(state, ensure_ascii=False, indent=2),
-                encoding="utf-8"
-            )
+        load_and_update_state(state_file, _update)
     except Exception:
-        # 任何异常都静默退出 —— 不能因为 hook 失败阻断用户工具调用
         sys.exit(0)
 
 
 if __name__ == "__main__":
-    main()
+    _project = None
+    try:
+        main()
+    finally:
+        try:
+            _project = _lib_find_project_root()
+            if _project:
+                _hook_end("activity-watcher", _project)
+        except Exception:
+            pass
