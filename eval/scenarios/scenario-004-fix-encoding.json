@@ -1,0 +1,49 @@
+{
+  "task_id": "scenario-004-fix-encoding",
+  "task_source": "real-task",
+  "title": "修 Windows 下 Python 脚本输出中文 GBK 报错",
+  "description": "Windows cmd 默认 GBK 编码，scripts/ 下多个 Python 脚本（如 pitfall-analyze.py、harness.py）输出含中文/特殊字符（✓ ⚠️ 等）时会 UnicodeEncodeError。已知修复模式：脚本顶部 sys.stdout.reconfigure(encoding='utf-8') + try/except AttributeError 兼容老 Python。批量给 scripts/ 下所有可执行 Python 脚本加上这个 boilerplate。考虑抽到 lib/utils.py 做共享 helper。",
+  "complexity": "small-medium",
+  "expected_route": "C",
+  "expected_skills": [
+    "generic-research",
+    "generic-implement",
+    "generic-test",
+    "code-reviewer",
+    "security-reviewer"
+  ],
+  "expected_files_changed": [
+    "scripts/lib/utils.py",
+    "scripts/pitfall-analyze.py",
+    "scripts/harness.py",
+    "scripts/skill-resolver.py",
+    "scripts/skill-suggest.py",
+    "scripts/web_hud.py"
+  ],
+  "reference_impl": {
+    "similar_files": [
+      "scripts/pitfall-analyze.py"
+    ],
+    "related_rules": []
+  },
+  "verification": {
+    "command": "python -c \"import sys; sys.path.insert(0, 'scripts'); from lib.utils import force_utf8_output\" && grep -l 'force_utf8_output\\|stdout.reconfigure' scripts/harness.py scripts/skill-resolver.py scripts/pitfall-analyze.py | wc -l | grep -q '^[3-9]'",
+    "success_criteria": "lib/utils.py 暴露 force_utf8_output() 工具函数，至少 3 个主要 CLI 脚本调用它"
+  },
+  "rubric": {
+    "must_pass": [
+      "lib/utils.py 新增 force_utf8_output() 共享 helper",
+      "至少 3 个 scripts/*.py 主入口脚本调用此 helper",
+      "兼容 Python 3.6（无 reconfigure）的降级路径"
+    ],
+    "should_pass": [
+      "测试覆盖 helper 在不同 Python 版本下的行为",
+      "不破坏现有 stdout 重定向场景（如 > file）",
+      "code-reviewer 应注意：sys.stderr 也应同步处理"
+    ],
+    "nice_to_have": [
+      "提到 PYTHONIOENCODING 环境变量作为替代方案",
+      "在 templates/project-skeleton/.claude/rules/ 新增一条 windows-compat.md 规则"
+    ]
+  }
+}

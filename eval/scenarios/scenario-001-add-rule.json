@@ -1,0 +1,45 @@
+{
+  "task_id": "scenario-001-add-rule",
+  "task_source": "real-task",
+  "title": "新增一条 rules/import-order.md 规则",
+  "description": "给 templates/project-skeleton/.claude/rules/ 新增一个示例规则文件 import-order.md，规范 import 顺序：内置库 → 第三方 → 本地相对路径，每组之间空一行。按反例免疫格式（README.md 中定义）写：补偿的缺口 + ❌反例 + ✅正例 + 边界。",
+  "complexity": "small",
+  "expected_route": "C-lite",
+  "expected_skills": [
+    "generic-implement",
+    "generic-test"
+  ],
+  "expected_files_changed": [
+    "templates/project-skeleton/.claude/rules/import-order.md",
+    "templates/project-skeleton/.claude/rules/README.md"
+  ],
+  "reference_impl": {
+    "similar_files": [
+      "templates/project-skeleton/.claude/rules/code-naming.md",
+      "templates/project-skeleton/.claude/rules/code-style.md"
+    ],
+    "related_rules": [
+      "templates/project-skeleton/.claude/rules/README.md"
+    ]
+  },
+  "verification": {
+    "command": "test -f templates/project-skeleton/.claude/rules/import-order.md && grep -q '反例' templates/project-skeleton/.claude/rules/import-order.md && grep -q '正例' templates/project-skeleton/.claude/rules/import-order.md && grep -q 'import-order' templates/project-skeleton/.claude/rules/README.md",
+    "success_criteria": "文件存在，含反例/正例段落，README 已更新现有文件清单"
+  },
+  "rubric": {
+    "must_pass": [
+      "import-order.md 创建",
+      "包含 ❌反例 + ✅正例 两个 markdown section",
+      "rules/README.md 的现有文件表格新增 import-order 行"
+    ],
+    "should_pass": [
+      "反例和正例的代码片段语言标注正确（typescript / python 任选）",
+      "包含「补偿的缺口」段落解释为什么这条规则存在",
+      "包含「边界 / 例外」段落"
+    ],
+    "nice_to_have": [
+      "反例覆盖 ≥ 2 种常见错误写法",
+      "提到与 lint 工具（如 eslint-plugin-import）的配套关系"
+    ]
+  }
+}

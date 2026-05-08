@@ -1,0 +1,53 @@
+{
+  "task_id": "scenario-005-scaffold-skeleton",
+  "task_source": "real-task",
+  "title": "实现 scripts/scaffold.sh --skeleton 一键生成项目骨架",
+  "description": "C 阶段已建好 templates/project-skeleton/ 完整骨架（20 个文件）。当前用户需手动 cp -r 才能用。新增 scripts/scaffold.sh --skeleton 命令：(1) 在当前目录或 --target <dir> 复制骨架；(2) 检测已有 .claude/ 时给 --force / --merge 选项；(3) 替换占位符（如 {project_name} → 当前目录名）；(4) 跑完打印『Next steps』指引（提示 dev-config 配置 + 第一次 /dev）。考虑 scaffold.sh 已存在的话，把这个作为新增子命令。",
+  "complexity": "large",
+  "expected_route": "B",
+  "expected_skills": [
+    "generic-research",
+    "generic-product-prd",
+    "generic-implement",
+    "generic-audit",
+    "generic-test",
+    "generic-review"
+  ],
+  "expected_files_changed": [
+    "scripts/scaffold.sh",
+    "README.md",
+    "docs/quickstart.md"
+  ],
+  "reference_impl": {
+    "similar_files": [
+      "scripts/scaffold.sh",
+      "scripts/setup.sh",
+      "scripts/detect-codex.sh"
+    ],
+    "related_rules": []
+  },
+  "verification": {
+    "command": "bash scripts/scaffold.sh --help 2>&1 | grep -q -- '--skeleton' && cd /tmp && rm -rf _eval_skel_test && mkdir _eval_skel_test && cd _eval_skel_test && bash $OLDPWD/scripts/scaffold.sh --skeleton --target . && test -d .claude/rules && test -d .claude/code-design && test -f .claude/pitfall-journal.jsonl",
+    "success_criteria": "--help 列出 --skeleton；执行后目标目录有完整三层骨架"
+  },
+  "rubric": {
+    "must_pass": [
+      "scripts/scaffold.sh --skeleton 子命令工作",
+      "拷贝 templates/project-skeleton/ 全部 20 个文件",
+      "支持 --target <dir> 指定目标",
+      "已有 .claude/ 时安全（不覆盖，提示 --force）"
+    ],
+    "should_pass": [
+      "支持 --merge 把骨架合并到已有 .claude/（不覆盖现有文件）",
+      "占位符替换（README 中的 my-project → 实际目录名）",
+      "结束打印 Next steps（包含 dev-config 创建提示）",
+      "更新 README + quickstart 文档说明新命令"
+    ],
+    "nice_to_have": [
+      "支持 --dry-run 预览将创建的文件",
+      "彩色输出（tput 检测）",
+      "Idempotent：重复运行不破坏",
+      "Windows Git Bash 兼容性测试"
+    ]
+  }
+}

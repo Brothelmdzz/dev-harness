@@ -1,0 +1,47 @@
+{
+  "task_id": "scenario-002-pitfall-since",
+  "task_source": "real-task",
+  "title": "给 pitfall-analyze.py 加 --since 参数",
+  "description": "scripts/pitfall-analyze.py 当前会扫描整个 pitfall-journal.jsonl。增加 --since YYYY-MM-DD 参数，只考虑指定日期之后的条目。聚类与候选生成逻辑保持不变。--help 输出说明用法。CLI 测试覆盖：(1) 无 --since 默认行为不变 (2) --since 截断旧条目 (3) --since 格式错误时友好报错。",
+  "complexity": "medium",
+  "expected_route": "C",
+  "expected_skills": [
+    "generic-research",
+    "generic-implement",
+    "generic-audit",
+    "generic-test",
+    "generic-review"
+  ],
+  "expected_files_changed": [
+    "scripts/pitfall-analyze.py",
+    "scripts/lib/pitfall.py"
+  ],
+  "reference_impl": {
+    "similar_files": [
+      "scripts/pitfall-analyze.py",
+      "scripts/lib/pitfall.py"
+    ],
+    "related_rules": []
+  },
+  "verification": {
+    "command": "python scripts/pitfall-analyze.py --help | grep -q -- '--since' && python scripts/pitfall-analyze.py --since 2099-01-01 --project /tmp/_eval_pf_test --threshold 1 --dry-run 2>&1 | grep -qE '(无满足|未发现)'",
+    "success_criteria": "--help 输出含 --since；用未来日期跑无候选生成；格式错时报错而非崩溃"
+  },
+  "rubric": {
+    "must_pass": [
+      "--since 参数被正确实现",
+      "--since YYYY-MM-DD 格式校验（无效格式友好报错）",
+      "lib/pitfall.py 的 cluster_by_category / find_promotable 兼容此参数",
+      "无 --since 时行为与原版完全一致（向后兼容）"
+    ],
+    "should_pass": [
+      "--help 文档清晰说明 --since 用法",
+      "添加单元测试覆盖三个场景",
+      "未来日期 + threshold 1 时返回空（已有测试用例验证）"
+    ],
+    "nice_to_have": [
+      "支持相对时间表示（如 --since 7d 表示 7 天前）",
+      "lib/pitfall.py 重构出 _filter_by_date 辅助函数提升可测性"
+    ]
+  }
+}

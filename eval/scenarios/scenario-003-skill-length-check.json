@@ -1,0 +1,49 @@
+{
+  "task_id": "scenario-003-skill-length-check",
+  "task_source": "real-task",
+  "title": "实现 SKILL.md ≤ 200 行红线检查",
+  "description": "design-philosophy.md 第四节红线 4 规定：单个 SKILL.md 不超过 200 行（渐进披露原则）。当前没有机械校验。新建 scripts/check-skill-length.py，扫描 skills/**/SKILL.md，超过 200 行的输出 ERROR 退出 1，刚好 200 输出 WARN，正常退出 0。集成到 eval-runner 作为 v33_features 维度的一项。",
+  "complexity": "medium",
+  "expected_route": "C",
+  "expected_skills": [
+    "generic-research",
+    "generic-implement",
+    "generic-test",
+    "architect",
+    "generic-review"
+  ],
+  "expected_files_changed": [
+    "scripts/check-skill-length.py",
+    "docs/design-philosophy.md"
+  ],
+  "reference_impl": {
+    "similar_files": [
+      "scripts/detect-codex.sh",
+      "scripts/pitfall-analyze.py"
+    ],
+    "related_rules": [
+      "docs/design-philosophy.md"
+    ]
+  },
+  "verification": {
+    "command": "python scripts/check-skill-length.py --help && python scripts/check-skill-length.py 2>&1 | tee /tmp/_skill_check.log; rc=$?; if [ $rc -eq 0 ] || [ $rc -eq 2 ]; then exit 0; else exit 1; fi",
+    "success_criteria": "脚本可运行，对所有 SKILL.md 输出长度，退出码 0=全部 OK，1=有超长，2=有 WARN"
+  },
+  "rubric": {
+    "must_pass": [
+      "scripts/check-skill-length.py 可独立运行",
+      "正确扫描 skills/**/SKILL.md（不含 references/）",
+      "超长输出 ERROR + 行号信息",
+      "退出码语义清晰（0/1/2）"
+    ],
+    "should_pass": [
+      "支持 --max-lines 参数自定义阈值",
+      "支持 --json 输出便于 CI 集成",
+      "design-philosophy.md 红线 4 处加链接到此脚本"
+    ],
+    "nice_to_have": [
+      "Pre-commit hook 集成示例",
+      "对 references/ 子目录给出建议（拆分提示）"
+    ]
+  }
+}
