@@ -17,8 +17,14 @@ eval/pareto-frontier.json
 eval/trace-schema.json
 eval/judge-prompt.md
 
-# docs（本地研究文档，不上传）
-docs/
+# docs/：默认本地（研究/规划文档不上传），白名单公开方法论与用户文档
+# 注意：git 中目录级 ignore (docs/) 会让白名单失效，必须用 docs/* 文件级 ignore
+docs/*
+!docs/design-philosophy.md
+!docs/external-references-2026-05.md
+!docs/quickstart.md
+!docs/contributing.md
+!docs/known-issues.md
 
 # Python
 __pycache__/
