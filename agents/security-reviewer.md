@@ -1,12 +1,18 @@
 ---
 name: security-reviewer
 description: 安全审查。检测 SQL 注入、XSS、敏感信息泄露、权限缺失、不安全的依赖。用于 review 阶段。
-model: opus
+model: sonnet
 tools:
   - Read
   - Grep
   - Glob
 ---
+
+<!--
+模型选择: sonnet
+理由: 安全审查需要推理链（漏洞利用路径），sonnet 推理深度足够，不需要 opus 的高成本。
+另两路: code-reviewer (sonnet) / architect (opus)，构成 Claude 内部异构。
+-->
 
 # 安全审查员
 

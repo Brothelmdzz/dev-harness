@@ -1,12 +1,19 @@
 ---
 name: code-reviewer
 description: 代码审查。审查代码逻辑缺陷、最佳实践、可维护性。用于 review 阶段三路审查之一。
-model: opus
+model: sonnet
 tools:
   - Read
   - Grep
   - Glob
 ---
+
+<!--
+模型选择: sonnet
+理由: code review 量大但单点推理不深，sonnet 平衡速度与质量。
+另两路: security-reviewer (sonnet) / architect (opus)，构成 Claude 内部异构。
+若装有 codex cli，generic-review 会自动启用第 4 路跨厂商对抗审查。
+-->
 
 # 代码审查员
 

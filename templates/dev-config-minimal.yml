@@ -7,6 +7,15 @@ gates:
   build: "echo 'ERROR: 未配置构建命令' && exit 1"
   test: "echo 'ERROR: 未配置测试命令' && exit 1"
 
+# 跨厂商对抗审查（可选）— 装了 codex cli 时自动启用第 4 路审查
+# review:
+#   cross_vendor:
+#     enabled: auto    # auto | true | false（默认 auto）
+#                      # auto: 检测到 codex cli 自动启用，没装则静默跳过
+#                      # true: 强制启用（未装 codex 会报错）
+#                      # false: 永不启用
+#     provider: codex  # v4 起仅支持 codex（依赖 ~/.codex/config.toml 中预设的 model_provider）
+
 # 防线参数（可选，不配则使用默认值）
 # limits:
 #   stage_timeout: 1800        # 单阶段超时，秒 (默认30min，范围5min~2h)
