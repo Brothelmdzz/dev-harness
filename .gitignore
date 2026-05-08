@@ -1,3 +1,9 @@
+# 项目根级 ignore（dev-harness 自身作为项目跑时的运行时产物 + 私有研究）
+# 用前导 / 仅匹配仓库根目录，不影响 templates/project-skeleton/.claude/
+/.claude/
+/.design/
+eval/.claude/
+
 # 运行时产物（用户项目内的 .claude/ 子目录）
 .claude/plans/
 .claude/harness-state.json
