@@ -1,375 +1,237 @@
 # Dev Harness
 
-> Harness Engineering pipeline for Claude Code & Cursor.
-> Three-layer skill resolution · Multi-agent parallel · AutoLoop · Web HUD · 12 agents.
+> Self-driving development pipeline for Claude Code & Cursor.
 
-Dev Harness 把 AI 编码助手变成**自驱动开发流水线**。输入 `/dev`，自动走完 research → plan → implement → [audit + docs + test 并行] → review → remember。
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-1.0%2B-purple)](https://claude.ai/code)
+[![Cursor](https://img.shields.io/badge/Cursor-2.5%2B-blue)](https://cursor.com)
 
 ---
+
+## Why dev-harness
+
+AI coders write code fast, but the *process* still falls back to humans — code review, test execution, audit, documentation. The result is "fast typing, slow shipping."
+
+dev-harness applies **Harness Engineering** — agent scaffolding as load-bearing infrastructure that compensates for what models can't do alone (Anthropic, *Effective harnesses for long-running agents*). One `/dev` command takes a task through research → plan → implement → audit + docs + test → review → remember, with stop-hook defenses that resume the agent when it tries to halt mid-pipeline.
+
+What you get out of the box:
+
+- **One command, full pipeline**: `/dev` resolves the right skill at each stage automatically.
+- **Multi-model code review** (v4): three Claude reviewers (sonnet × 2 + opus) plus optional cross-vendor adversarial review via Codex CLI.
+- **Six stop-hook defenses**: rate limit, context overflow, timeout, retry storms — never silently dies.
+
+## Quick start
+
+```bash
+# Claude Code
+/plugin marketplace add brothelmdzz/dev-harness
+/plugin install dev-harness && /reload-plugins
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh"
+
+# Then in any project
+/dev
+```
+
+## How it works
+
+```
+/dev → skills/dev/SKILL.md (orchestrator)
+  → detect-stack.sh + skill-resolver.py + harness.py init
+  → Pipeline loop (defaults/pipeline.yml):
+        research → prd → plan → implement → [audit | docs | test] → review → remember
+                                                  parallel group              three-way
+        Each stage completion → harness.py update
+        Claude tries to stop → stop-hook.py defenses → blocks if pipeline incomplete
+```
+
+**Three-layer skill resolution** — same `/dev`, different projects pick different skills automatically:
+
+```
+L1: .claude/skills/{name}/SKILL.md      → project-specific (highest priority)
+L2: ~/.claude/skills/{name}/SKILL.md    → user-level overrides
+L3: skills/generic-{name}/              → built-in fallback
+```
+
+## Core concepts
+
+| Term | One-liner |
+|------|-----------|
+| **Skill** | A markdown playbook that drives one pipeline stage. Resolved via L1/L2/L3. |
+| **Agent** | A specialized sub-agent (12 total) with its own model and tool access. |
+| **Hook** | A shell hook into Claude Code's lifecycle (Stop / PostToolUse / SessionStart). |
+| **Pipeline** | YAML-defined ordered stages with optional `parallel_group` and `depends_on` DAG. |
+| **Route** | Pre-defined pipeline subsets (B = full, C = skip research+prd, C-lite = quick fix). |
+
+## Multi-model code review (v4)
+
+```
+Layer 1 — Claude internal heterogeneous (always runs)
+  ├─ code-reviewer       (sonnet)   ← code quality, bugs, edge cases
+  ├─ security-reviewer   (sonnet)   ← OWASP top 10, secrets, auth
+  └─ architect           (opus)     ← architecture, module boundaries
+
+Layer 2 — Cross-vendor adversarial (optional, auto-detect)
+  └─ codex exec          (your config)  ← GPT / GLM / o3 / etc. via Codex CLI
+
+Aggregation:
+  ≥ 2 channels hit same issue  → high confidence, must fix
+  cross-vendor only            → "heterogeneous perspective" section
+```
+
+Layer 2 enables itself when `bash scripts/detect-codex.sh` exits 0 and `dev-config.yml` has `review.cross_vendor.enabled: auto` (default). No codex installed? It silently skips.
+
+## Comparison: bare Claude Code vs Dev Harness
+
+| Capability | Bare Claude Code | + Dev Harness |
+|------------|------------------|---------------|
+| Multi-stage pipeline | manual orchestration | one `/dev` runs full flow |
+| Skill resolution | global skills only | three-layer (project > user > built-in) |
+| Stop discipline | trust the agent | six defenses + auto-resume on incomplete |
+| Code review | one model, one pass | 3 Claude reviewers + optional codex cross-vendor |
+| Pitfall learning | manual | journal → ground-truth injection on resume |
+| State observability | conversation only | live state file + Web HUD |
+| Parallel agents | manual subagent calls | orchestrator mode auto-triggers when phases > 3 |
+
+## Documentation
+
+- [Design Philosophy](docs/design-philosophy.md) — eight principles + nine red lines
+- [External References (May 2026)](docs/external-references-2026-05.md) — distilled methodologies from 5 industry case studies
+- [Quick Start](docs/quickstart.md) — first-time walkthrough
+- [Contributing](docs/contributing.md)
+- [Known Issues](docs/known-issues.md)
+- [Changelog](CHANGELOG.md)
 
 ## Installation
 
 ### Claude Code
 
 ```bash
-# 1. 添加 Marketplace
 /plugin marketplace add brothelmdzz/dev-harness
-
-# 2. 安装插件
-/plugin install dev-harness
-/reload-plugins
-
-# 3. 初始化环境（创建 venv + 安装依赖）
+/plugin install dev-harness && /reload-plugins
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh"
 ```
 
 ### Cursor 2.5+
 
 ```bash
-# 1. 安装插件
 /add-plugin brothelmdzz/dev-harness
-
-# 2. 初始化环境
 bash "${CURSOR_PLUGIN_ROOT}/scripts/setup.sh"
 ```
 
-### 手动安装（Codex CLI / Gemini CLI / 其他 Agent Skills 兼容工具）
+### Manual (Codex / Gemini / other Agent Skills compatible tools)
 
 ```bash
-# 1. Clone 到本地
 git clone https://github.com/brothelmdzz/dev-harness.git ~/.claude/plugins/dev-harness
-
-# 2. 初始化环境
 bash ~/.claude/plugins/dev-harness/scripts/setup.sh
 ```
 
-> **环境隔离**: setup.sh 在插件目录内创建 `.venv`，所有依赖安装到隔离环境。不修改全局 Python，不修改 settings.json，不往 `~/.claude/` 写文件。
-
-### 安装后验证
-
-首次启动新会话时，SessionStart Hook 会自动检测环境。如果 venv 未初始化，会提示运行 setup.sh。
-
-```bash
-# 可选：运行完整评测（50 用例，15 维度）
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" --with-eval
-```
-
----
-
-## Quick Start
-
-```bash
-# 在任何项目目录中
-/dev
-```
-
-Claude 会自动：
-1. 检测技术栈（Gradle / npm / Python / Rust / Go...）
-2. 解析最佳 Skill（项目级 > 用户级 > 内置）
-3. 按 Pipeline 自动推进全流程
-4. 中途不停（Stop Hook + 六道防线）
-
----
+setup.sh creates an isolated `.venv` inside the plugin directory. No global Python is touched, no `~/.claude/` writes, no `settings.json` modifications.
 
 ## Commands
 
-Dev Harness 提供 **3 种运行模式**和 **6 个入口命令**，按任务规模选择：
+| Command | Mode | When | Pipeline |
+|---------|------|------|----------|
+| `/dev` | pipeline | New feature, mid-large change | full |
+| `/fix` | single | Bug fix, small change | implement + test |
+| `/test` | single | Verify existing code | test only |
+| `/audit` | single | Quality/spec audit | audit only |
+| `/review` | single | PR review | three-way (+ optional codex) |
+| `/ask` | conversation | Q&A, no code change | none, stop-hook stays out |
 
-| 命令 | 模式 | 场景 | 执行内容 |
-|------|------|------|---------|
-| **`/dev`** | pipeline | **完整流程** — 新功能/中型改动 | research → plan → implement → audit + docs + test → review → remember |
-| **`/fix`** | single | **快速修复** — Bug 修复/小改动 | implement + test（跳过所有其他阶段） |
-| **`/test`** | single | **只跑测试** — 验证现有代码 | 自动检测测试框架并运行 |
-| **`/audit`** | single | **只做审计** — 代码质量检查 | 对比 plan 与实现，输出审计报告 |
-| **`/review`** | single | **只做审查** — PR 代码审查 | 三路并行：code + security + architecture |
-| **`/ask`** | conversation | **对话问答** — 不改代码 | 纯 Q&A，stop-hook 不介入，不创建 pipeline |
+## Troubleshooting
 
-### 模式对比
+| Symptom | Fix |
+|---------|-----|
+| Hook path stale after upgrade | `bash "${CLAUDE_PLUGIN_ROOT}/scripts/fix-hook-path.sh"` |
+| `implement` halts mid-stage | check `.claude/harness-state.json` phases — empty triggers plan-watcher fallback automatically |
+| Web HUD has no data | `harness.py web-hud --project /path` |
+| Cross-vendor review never runs | `bash scripts/detect-codex.sh -v` to see why |
 
-| 模式 | state 行为 | stop-hook | 典型耗时 |
-|------|-----------|-----------|---------|
-| **pipeline** | 完整 pipeline 状态机 | 六道防线 + 阶段自动推进 | 10 分钟 ~ 2 小时 |
-| **single** | 只记录指定阶段 | 只检查指定阶段完成 | 1 ~ 15 分钟 |
-| **conversation** | 创建但不介入 | 直接放行 | 实时 |
+## CLI reference
 
-### 使用示例
-
-```bash
-# 大型重构 - 走完整流程
-/dev
-# → 实现"用户中心支持 OAuth 登录"
-
-# 小 bug 修复 - 跳过 plan/audit/review
-/fix
-# → "修复 login 页面按钮点击无响应"
-
-# CI 挂了想先跑一遍测试
-/test
-
-# PR review
-/review
-# → 三路并行审查 + 汇总报告到 .claude/reports/final-review.md
-
-# 只是想聊聊架构
-/ask
-# → "解释一下这个项目的三层 Skill 解析机制"
-```
-
----
-
-## What's Inside
-
-### Skills (18)
-
-| Skill | 描述 |
-|-------|------|
-| **`/dev`** | 入口编排器，管理全流程 |
-| `generic-research` | 并行 subagent 代码库研究 |
-| `generic-implement` | 按 plan 逐 Phase 实现 + 门禁 |
-| `generic-audit` | 代码审计，对比 plan 与实现 |
-| `generic-review` | 三路并行审查（code + security + arch） |
-| `generic-test` | 自动检测测试框架并运行 |
-| `generic-docs` | API 文档自动更新 |
-| + 11 more | frontend / tdd / prd / wiki / remember... |
-
-### Agents (12)
-
-全部 **Opus** 模型：architect, planner, code-reviewer, security-reviewer, executor, debugger, qa-tester, auto-loop, wiki-syncer, explore, gate-checker, skill-router
-
-### Hooks (4)
-
-| Hook | 事件 | 作用 |
-|------|------|------|
-| `session-init.py` | SessionStart | 检测 venv，未初始化时引导用户 |
-| `stop-hook.py` | Stop | 六道防线阻止 Pipeline 中途停下 |
-| `plan-watcher.py` | PostToolUse(Write/Edit) | Plan 文件写入时自动注册 phases |
-| `activity-watcher.py` | PostToolUse(Write/Edit/Bash/Task) | 记录工具调用到 activity 环形缓冲，Web HUD 实时展示 |
-
-### Scripts (12)
-
-| 脚本 | 作用 |
-|------|------|
-| `dh-python.sh` | 统一 Python 入口（优先 venv → fallback 系统） |
-| `harness.py` | 状态管理 + HUD 面板 + Worker 管理 |
-| `web_hud.py` | Web HUD 服务器（从 harness.py 拆分） |
-| `skill-resolver.py` | 三层 Skill 解析 |
-| `detect-stack.sh` | 技术栈自动检测 |
-| `worktree.sh` | Git Worktree 隔离 |
-| `setup.sh` | 安装验证 + venv 初始化 |
-| `scaffold.sh` | Skill 脚手架生成 |
-| `fix-hook-path.sh` | 修复升级后 hook 路径失效 |
-| `notify.py` | 桌面通知 + 飞书 Webhook |
-| `team-report.py` | 多项目团队看板 |
-| `lib/` | 共享库：state / compat / pipeline / plan / project / config / utils / hook_trace |
-
----
-
-## Pipeline
-
-```
-research → prd → plan → implement → [ audit + docs + test ] → review → remember
-                           │              并行组 ⫘                三路并行
-                           │
-                      Phase > 3 ?
-                      ├─ yes → Orchestrator 模式（多 Worker 并行 worktree）
-                      └─ no  → 串行模式
-```
-
-### 5 条路线
-
-| 路线 | 阶段 | 场景 |
-|------|------|------|
-| **B** | 全流程 | 大型新功能 |
-| **A** | 跳 research | 中型功能 |
-| **C** | 跳 research + prd | **最常用** |
-| **C-lite** | implement + test + remember | 小修复 |
-| **D** | 同 C-lite | 同上 |
-
----
-
-## Three-Layer Skill Resolution
-
-```
-L1: .claude/skills/{name}/SKILL.md    → 项目专用（最高优先级）
-L2: ~/.claude/skills/{name}/SKILL.md  → 用户级自定义
-L3: generic-{name} (插件内置)          → 通用兜底
-```
-
-同一个 `/dev`，不同项目自动使用不同 Skill。
-
----
-
-## Multi-Agent Parallel
-
-**Layer 1 — 阶段级并行**: implement 完成后，audit + docs + test 三路 background Agent 同时跑。
-
-**Layer 2 — Orchestrator 模式**: Plan 中 Phase > 3 时自动触发。`harness.py analyze-deps` 分析文件依赖，将无依赖的 Phase 分批并行，每个 Worker 在独立 worktree 中执行。
-
-**review 三路并行**: code-reviewer + security-reviewer + architect 在 skill 内部并行。
-
----
-
-## Web HUD
+<details>
+<summary>Click to expand</summary>
 
 ```bash
-# 另一个终端启动（自动发现活跃项目）
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" web-hud
+# State management
+harness.py init "task" --route C [--mode pipeline|single|conversation]
+harness.py update <stage> <status> [--phase N] [--gate build=pass]
+harness.py detect-mode
+harness.py analyze-deps
 
-# 浏览器打开 http://localhost:1603
+# Worker management (orchestrator mode)
+harness.py worker-report <id> --phase <N> --status DONE [--branch <b>]
+harness.py worker-status
+harness.py worker-cleanup
+
+# Visualization
+harness.py web-hud [--port 1603] [--bind 127.0.0.1] [--project /path]
+harness.py hud --watch --rich
+
+# Skill resolution
+skill-resolver.py <stage> [--profile frontend] [--verbose]
+skill-resolver.py --all
+
+# v4 ABC tooling
+bash scripts/detect-codex.sh                    # check codex CLI for cross-vendor review
+python scripts/pitfall-analyze.py --threshold 3 # promote recurring failures into rules
+
+# Notification + team report + skill suggest
+notify.py --title "X" --message "Y" --level success [--lark]
+team-report.py [--json] [-o report.md]
+skill-suggest.py [--threshold 80] [--consecutive 3]
+
+# Version sync
+bash scripts/sync-plugin-meta.sh [3.4.1]
 ```
 
-**v3.3 特性**:
-- **SSE 实时推送** — 0.5 秒检测 state 变化，连接失败自动降级为 2 秒轮询
-- **Worker 可视化** — Orchestrator 模式下并行批次进度 + Worker 分支名 + 状态
-- **评测趋势图** — Canvas 折线图显示 score / pass rate 历史走势
-- **移动端适配** — 768px 断点，单列布局 + 下拉选择
-- **完成项目过滤** — 默认隐藏已结束任务，勾选 "show completed" 查看全部
-- **安全默认** — 绑定 `127.0.0.1`，需外部访问用 `--bind 0.0.0.0`
+</details>
 
----
+## Project configuration
 
-## Stop Hook 六道防线
-
-| # | 防线 | 行为 |
-|---|------|------|
-| 1 | 上下文 > 80% | 放行让 compact |
-| 2 | Rate Limit | 暂停 15 分钟 |
-| 3 | 单阶段 > 30 分钟 | 放行 |
-| 4 | 总运行 > 2 小时 | 放行 |
-| 5 | 5 分钟内 > 10 次续跑 | 放行（死循环） |
-| 6 | error_count >= 3 | 放行 |
-
-v3.4 新增：Hook 超时面包屑追踪 -- 每个 hook 启动时写 `.hook-{name}.running`，正常退出时删除。残留文件 = 被超时杀掉的证据，下次 stop-hook 启动时自动检测并记录到 eval log。
-
----
-
-## Deterministic Phases Registration
-
-SKILL.md 是"建议"，Hook 是"约束"：
-
-1. **plan-watcher.py** (PostToolUse): Plan 文件写入 → 自动解析 Phase 标题注册到 state
-2. **stop-hook.py fallback**: phases 为空时从 plan 文件主动解析
-3. **产出验证**: audit/review DONE 但无报告文件 → 打回 IN_PROGRESS
-
----
-
-## Project Configuration
-
-可选 `.claude/dev-config.yml`：
+Optional `.claude/dev-config.yml`:
 
 ```yaml
 project: my-project
 gates:
   build: "./gradlew build -x test"
-  test: "./gradlew test"
+  test:  "./gradlew test"
+
+# v4: cross-vendor review (optional)
+review:
+  cross_vendor:
+    enabled: auto    # auto | true | false
+    provider: codex
+
+# Defense limits (override defaults)
+limits:
+  stage_timeout: 1800
+  max_duration:  7200
+  max_retries:   3
+
+# Skill overrides
 skill_overrides:
   audit: my-custom-audit
 ```
 
-模板：`bash "${CLAUDE_PLUGIN_ROOT}/scripts/scaffold.sh" --config springboot`
-
-v3.4 新增 `limits` 配置：
-
-```yaml
-limits:
-  stage_timeout: 2400     # 单阶段超时（秒），默认 1800
-  max_duration: 14400     # 总运行时长（秒），默认 7200
-  max_retries: 5          # 最大重试次数，默认 3
-```
-
----
-
-## Creating Custom Skills
-
-```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/scaffold.sh" my-audit
-# → .claude/skills/my-audit/SKILL.md（L1 最高优先级）
-```
-
----
-
-## CLI Reference
-
-```bash
-# 状态管理
-harness.py init "task" --route C [--mode pipeline|single|conversation] [--skills implement,test]
-harness.py update <stage> <status> [--phase N] [--gate build=pass] [--gate test=pass]
-harness.py detect-mode                    # 自动检测 serial/orchestrator
-harness.py analyze-deps                   # Phase 依赖分析 + 并行批次
-
-# Worker 管理
-harness.py worker-report <id> --phase <N> --status DONE [--branch <b>]
-harness.py worker-status
-harness.py worker-cleanup
-
-# 可视化
-harness.py web-hud [--port 1603] [--bind 127.0.0.1] [--project /path]
-harness.py hud --watch [--rich] [--project /path]
-
-# Skill 解析
-skill-resolver.py <stage> [--profile frontend] [--verbose]
-skill-resolver.py --all
-
-# v3.3 新增: 通知 + 团队看板 + Skill 建议
-notify.py --title "X" --message "Y" --level success [--lark]
-team-report.py [--json] [-o report.md]
-skill-suggest.py [--threshold 80] [--consecutive 3]
-
-# 版本同步
-bash sync-plugin-meta.sh [3.4.0]
-```
-
----
-
-## v3.4 Notable Changes
-
-- **共享库** (`scripts/lib/`): 消除 14 处代码重复，统一 state 读写、项目根发现、DAG 遍历、Phase 解析
-- **原子状态写入**: 所有 `harness-state.json` 写入路径统一使用 `.tmp` + `os.replace()`，防止 hook 超时导致文件损坏
-- **Pipeline DAG**: `depends_on` 字段声明阶段显式依赖，拓扑排序 + 环检测
-- **防线参数可配**: `dev-config.yml` 的 `limits` 段覆盖六道防线参数，自动 clamp 到合法范围
-- **filelock 安全门**: 并行模式（Orchestrator）启动前强制检测 `filelock` 依赖，缺失时拒绝进入
-- **Hook 超时追踪**: 面包屑机制检测被超时杀掉的 hook，记录到 eval log
-- **Web HUD 拆分**: HTTP 服务器从 `harness.py` 拆到独立的 `web_hud.py`
-
----
-
-## Troubleshooting
-
-### 插件升级后 Hook 路径失效
-
-```bash
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/fix-hook-path.sh"
-```
-
-### implement 阶段中途停下
-
-检查 `.claude/harness-state.json` 的 implement phases 是否为空。v3.2+ 已通过 plan-watcher + fallback 双重保障。
-
-### Web HUD 无数据
-
-自动从 session 索引发现项目。手动指定：`harness.py web-hud --project /path`
-
----
-
-## Evaluation
-
-```bash
-# 50 用例，15 维度
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh" --with-eval
-```
-
-维度：skill_resolution / state_management / auto_continue / gate_detection / pipeline_routing / hook_defense / session_isolation / skill_override / parallel_group / worker_management / plan_watcher / phases_fallback / v33_features / limits_config / depends_on
-
----
+Templates live in `templates/dev-config-{go,python,rust,nextjs,springboot,monorepo,minimal}.yml`.
 
 ## Compatibility
 
-基于 [Agent Skills](https://agentskills.io) 开放标准。SKILL.md 格式通用于：
+Built on the [Agent Skills](https://agentskills.io) open standard. SKILL.md format is portable across:
 
-Claude Code · Cursor · Gemini CLI · GitHub Copilot · VS Code · OpenAI Codex · OpenHands · Roo Code · 30+ 平台
+Claude Code · Cursor · Gemini CLI · GitHub Copilot · VS Code · OpenAI Codex · OpenHands · Roo Code · 30+ platforms
 
----
+## Acknowledgments
+
+This project's design draws from:
+
+- Anthropic — [Effective harnesses for long-running agents](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents), [Harness design for long-running application development](https://www.anthropic.com/engineering/harness-design-long-running-apps), [Building effective agents](https://www.anthropic.com/research/building-effective-agents)
+- OpenAI — [Harness engineering: leveraging Codex in an agent-first world](https://openai.com/index/harness-engineering/), [Unrolling the Codex agent loop](https://openai.com/index/unrolling-the-codex-agent-loop/), [Unlocking the Codex harness](https://openai.com/index/unlocking-the-codex-harness/)
+- Industry case studies (digested in [docs/external-references-2026-05.md](docs/external-references-2026-05.md)) — Dewu × 2, Tencent × 2, Alibaba
+
+See [docs/design-philosophy.md](docs/design-philosophy.md) for how these inform the eight design principles and nine architectural red lines.
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
