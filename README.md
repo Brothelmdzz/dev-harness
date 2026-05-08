@@ -62,6 +62,29 @@ L3: skills/generic-{name}/              → built-in fallback
 | **Pipeline** | YAML-defined ordered stages with optional `parallel_group` and `depends_on` DAG. |
 | **Route** | Pre-defined pipeline subsets (B = full, C = skip research+prd, C-lite = quick fix). |
 
+## Multi-agent parallel
+
+dev-harness coordinates agents on two levels:
+
+**Layer 1 — Stage-level (`parallel_group`)**: after `implement` completes, three background agents run `audit`, `docs`, and `test` *simultaneously*. Each reports to `harness-state.json` independently. Declared in `pipeline.yml`:
+
+```yaml
+- name: audit
+  parallel_group: post-implement
+- name: docs
+  parallel_group: post-implement
+- name: test
+  parallel_group: post-implement
+```
+
+**Layer 2 — Phase-level (Orchestrator)**: when a plan has > 3 phases, dev-harness *automatically* switches to orchestrator mode:
+
+- `harness.py analyze-deps` reads file-level dependencies and groups independent phases into batches
+- Each worker runs in an isolated `git worktree` (`scripts/worktree.sh`) — no merge races
+- Workers report through `.claude/workers/worker-*.json`; the main agent waits for all before advancing
+
+Concurrency safety uses `filelock` on `harness-state.json`. The orchestrator refuses to start if `filelock` is missing (no silent fallback to broken state).
+
 ## Multi-model code review (v4)
 
 ```
@@ -79,6 +102,31 @@ Aggregation:
 ```
 
 Layer 2 enables itself when `bash scripts/detect-codex.sh` exits 0 and `dev-config.yml` has `review.cross_vendor.enabled: auto` (default). No codex installed? It silently skips.
+
+## Pitfall journal & continuous learning (v4)
+
+When `build` / `test` / `audit` / `review` fails, the stop-hook captures the root cause to `.claude/pitfall-journal.jsonl`. On the next resume, recent failures are injected into the prompt as ground truth — the agent sees what *just* broke and avoids repeating it.
+
+```
+build/test/audit/review fails
+       ↓  stop-hook captures
+.claude/pitfall-journal.jsonl
+       ↓  stop-hook reads on resume
+ground-truth injected into next prompt
+       ↓  ≥ 3 same-category accumulated
+python scripts/pitfall-analyze.py
+       ↓  generates (does NOT activate)
+.claude/rules/auto-{category}-{date}.md.candidate
+       ↓  human reviews, renames to .md
+permanent entry in the constraint layer
+```
+
+Candidate rules are *never* auto-promoted — humans decide what becomes a rule (design philosophy principle 2: *Humans steer, agents execute*).
+
+```bash
+python scripts/pitfall-analyze.py --threshold 3
+python scripts/pitfall-analyze.py --threshold 5 --dry-run
+```
 
 ## Templates & project skeleton
 
@@ -122,6 +170,24 @@ docs/release-notes/           release notes
 
 20 files across 8 directories, each with a README explaining what gap it compensates for. The three layers come from Dewu's [Spec Coding methodology](docs/external-references-2026-05.md); the skeleton bundles in handbooks / runbooks / pitfall-journal from Alibaba's "ALL In Code" approach.
 
+## Web HUD
+
+Live pipeline observability in the browser:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" \
+     "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" web-hud
+# Default: http://127.0.0.1:1603
+```
+
+- **SSE live updates** — 0.5s state change detection; auto-fallback to 2s polling on disconnect
+- **Worker visualization** — orchestrator-mode parallel batches, worker branches, status
+- **Eval trend chart** — historical score / pass-rate via Canvas
+- **Multi-project auto-discovery** — via `~/.claude/dev-harness-sessions.json`
+- **Mobile-responsive** — 768px breakpoint, single-column layout
+
+Bind to `0.0.0.0` only when intentional (`--bind 0.0.0.0`); 127.0.0.1 is the safe default.
+
 ## Comparison: bare Claude Code vs Dev Harness
 
 | Capability | Bare Claude Code | + Dev Harness |
@@ -142,6 +208,7 @@ docs/release-notes/           release notes
 - [Contributing](docs/contributing.md)
 - [Known Issues](docs/known-issues.md)
 - [Changelog](CHANGELOG.md)
+- [Eval scenarios](eval/scenarios/) — 5 baseline real-task tests, regression suite for ABC and beyond
 
 ## Installation
 
@@ -179,6 +246,20 @@ setup.sh creates an isolated `.venv` inside the plugin directory. No global Pyth
 | `/audit` | single | Quality/spec audit | audit only |
 | `/review` | single | PR review | three-way (+ optional codex) |
 | `/ask` | conversation | Q&A, no code change | none, stop-hook stays out |
+
+### Pipeline routes
+
+Pick `--route` based on task scope; controls which stages `/dev` runs:
+
+| Route | Stages | Typical use |
+|-------|--------|-------------|
+| **B** | research → prd → plan → implement → audit/docs/test → review → remember | Brand-new feature on unfamiliar codebase |
+| **A** | (skip research) prd → plan → ... | New feature, codebase already understood |
+| **C** | (skip research+prd) plan → ... | **Most common** — well-defined mid-sized change |
+| **C-lite** | implement + test + remember | Small bug fix |
+| **D** | same as C-lite | same |
+
+Routes are defined in `defaults/pipeline.yml`; override per-project in `.claude/pipeline.yml`.
 
 ## Troubleshooting
 
@@ -226,6 +307,34 @@ skill-suggest.py [--threshold 80] [--consecutive 3]
 # Version sync
 bash scripts/sync-plugin-meta.sh [3.4.1]
 ```
+
+</details>
+
+<details>
+<summary><strong>Stop-hook six defenses</strong> (click to expand)</summary>
+
+The stop-hook prevents Claude from halting mid-pipeline. Six defenses (priority order):
+
+| # | Defense | Trigger | Action |
+|---|---------|---------|--------|
+| 1 | Context overflow | `context_window.used / total > 80%` | release (let compact run) |
+| 2 | Rate limit | `last_assistant_message` contains rate-limit keyword | pause 15 min, set `resume_at` |
+| 3 | Stage timeout | one stage running > 30 min | release |
+| 4 | Total timeout | task total > 2 h | release |
+| 5 | Frequency loop | > 10 resumes in 5 min (loop detection) | release |
+| 6 | Error budget | `error_count >= max_retries` (default 3) | release |
+
+Override defaults in `dev-config.yml`:
+
+```yaml
+limits:
+  stage_timeout: 1800
+  max_duration: 7200
+  context_overflow_pct: 80
+  max_retries: 3
+```
+
+Every trigger is logged to `.claude/harness-eval.jsonl` and visualized in Web HUD.
 
 </details>
 
