@@ -80,6 +80,48 @@ Aggregation:
 
 Layer 2 enables itself when `bash scripts/detect-codex.sh` exits 0 and `dev-config.yml` has `review.cross_vendor.enabled: auto` (default). No codex installed? It silently skips.
 
+## Templates & project skeleton
+
+dev-harness ships two kinds of templates under `templates/`:
+
+### Stack-specific configuration (7 presets)
+
+`.claude/dev-config.yml` templates for the most common stacks:
+
+| Template | Stack |
+|----------|-------|
+| `dev-config-go.yml` | Go (`go build` / `go test`) |
+| `dev-config-python.yml` | Python (`uv` / `pytest`) |
+| `dev-config-rust.yml` | Rust (`cargo`) |
+| `dev-config-nextjs.yml` | Next.js (`npm run build` / `npm test`) |
+| `dev-config-springboot.yml` | Spring Boot (`./gradlew`) |
+| `dev-config-monorepo.yml` | Multi-package monorepo |
+| `dev-config-minimal.yml` | Bare scaffolding (also has v4 `cross_vendor` config example) |
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/scaffold.sh" --config nextjs
+```
+
+### Three-layer regulation skeleton (v4)
+
+`templates/project-skeleton/` — a complete project-level skeleton implementing the "ALL In Code" principle (see [design-philosophy.md](docs/design-philosophy.md) principle 4). Copy it into a new project so the agent finds the context it needs at every stage:
+
+```
+.claude/
+├── rules/                    constraint layer — naming / style / comments
+│                             / structure / safety (5 counter-example-immune samples)
+├── code-design/              demonstration layer — api-handler /
+│                             react-component / crud-page templates
+├── ui-design/                visual layer — HTML high-fidelity mockup
+├── handbooks/                operations — deployment / 3rd-party integration
+├── runbooks/                 incident response playbooks
+└── pitfall-journal.jsonl     failure log (auto-populated by v4 stop-hook)
+
+docs/release-notes/           release notes
+```
+
+20 files across 8 directories, each with a README explaining what gap it compensates for. The three layers come from Dewu's [Spec Coding methodology](docs/external-references-2026-05.md); the skeleton bundles in handbooks / runbooks / pitfall-journal from Alibaba's "ALL In Code" approach.
+
 ## Comparison: bare Claude Code vs Dev Harness
 
 | Capability | Bare Claude Code | + Dev Harness |
