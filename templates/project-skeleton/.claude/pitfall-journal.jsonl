@@ -1,0 +1,2 @@
+{"_comment": "踩坑日志 — 每行一个 JSON 对象。结构见下方 _schema 行。dev-harness B 阶段 (Pitfall Journal 闭环) 上线后由 stop-hook.py 自动写入。手动也可以。"}
+{"_schema": {"id": "string (PIT-YYYYMMDD-NNN)", "occurred_at": "ISO 8601", "category": "build|test|runtime|deploy|review|other", "phase": "research|plan|implement|audit|test|review|other", "summary": "一句话描述", "root_cause": "根因", "resolution": "如何解决", "rule_candidate": "是否值得提炼成 rules/ (true/false)", "ab_tested": "是否已 A/B 验证过提炼后的 rule (true/false)"}}
