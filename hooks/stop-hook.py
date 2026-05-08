@@ -62,6 +62,7 @@ from lib.pipeline import (
     find_next_by_order as _find_next_by_order,
     find_next_runnable as _lib_find_next,
 )
+from lib.pitfall import build_pitfall_context, capture_failure
 
 def find_project_root():
     """stop-hook 需要 scan_fallback=True（hook cwd 可能不在项目目录）"""
@@ -205,9 +206,20 @@ def _build_context_summary(state, project_root):
     if error_count > 0:
         lines.append(f"累计错误: {error_count}")
 
-    if not lines:
+    # B 阶段：续跑前把最近踩坑作为 ground truth 注入下一轮 prompt
+    try:
+        pitfall_ctx = build_pitfall_context(project_root, max_recent=5)
+    except Exception:
+        pitfall_ctx = ""
+
+    if not lines and not pitfall_ctx:
         return ""
-    return "\n\n当前状态:\n" + "\n".join("- " + l for l in lines)
+    result = ""
+    if lines:
+        result = "\n\n当前状态:\n" + "\n".join("- " + l for l in lines)
+    if pitfall_ctx:
+        result += pitfall_ctx
+    return result
 
 # ==================== 主逻辑 ====================
 
@@ -452,6 +464,18 @@ def main():
     if current == "audit" and stage.get("status") == "DONE":
         if not has_valid_reports("audit-*.md"):
             stage["status"] = "IN_PROGRESS"
+            # B 阶段：失败入 pitfall journal，下次续跑会作为 ground truth 注入
+            try:
+                capture_failure(
+                    project_root,
+                    category="review",
+                    phase="audit",
+                    summary="audit 标记 DONE 但缺少有效审计报告",
+                    root_cause="reports/audit-*.md 不存在或不满足最低产出（>=500 字节 + ≥2 个 ## 标题）",
+                    resolution="按 generic-audit skill 重新生成 .claude/reports/audit-{module}-{date}.md",
+                )
+            except Exception:
+                pass  # B 阶段最高准则：不能让 pitfall 写入失败导致 stop-hook 崩溃
             save_state(state, state_file)
             reason = (
                 "audit 阶段缺少有效审计报告。请按 generic-audit skill 执行代码审计，"
@@ -466,6 +490,18 @@ def main():
         has_final = has_valid_reports("final-review*")
         if not has_review and not has_final:
             stage["status"] = "IN_PROGRESS"
+            # B 阶段：同样捕获到 pitfall journal
+            try:
+                capture_failure(
+                    project_root,
+                    category="review",
+                    phase="review",
+                    summary="review 标记 DONE 但缺少审查报告",
+                    root_cause="reports/review-*.md 与 final-review.md 都不存在或不满足最低产出要求",
+                    resolution="按 generic-review skill 三路并行审查后汇总到 final-review.md",
+                )
+            except Exception:
+                pass
             save_state(state, state_file)
             reason = (
                 "review 阶段缺少审查报告。请按 generic-review skill 要求执行三路并行审查：\n"
