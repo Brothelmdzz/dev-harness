@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.4.2] — 2026-05-11
+
+### Added — 防摆烂三件套
+
+- **`/dev` 启动声明强制**（`skills/dev/SKILL.md`）：顶部新增"启动声明（必读 · 不可跳过）"段，第一条回复必须以 `Using dev-harness:dev skill — running Step 0 now.` 开头并同一回复内立即并行执行 Step 0 三条 Bash。明令禁止"按 X 流程启动"的抽象总结代替执行。同源 superpowers `executing-plans` skill 的 "Announce at start" 模式。
+- **Plan 阶段 fallback 二态**（`defaults/pipeline.yml` + `templates/dev-config-minimal.yml`）：plan 阶段新增 `fallback: wait | auto-approve | skip`（默认 `wait`）。用户可在 `.claude/dev-config.yml` 通过 `plan.fallback` 覆盖，解决"严肃任务要审批 vs 微小变更想直推"的产品决策歧义。设计参考 mbruhler `.flow` DSL 的 `@review + fallback` 二态思路。
+- **Stop-Hook 软提醒分级层**（`hooks/stop-hook.py`）：防线 3/4/5 首次触发 → advisory + 续跑（让 Claude 自纠偏）；同 stage 内再次触发 → 原硬停逻辑。stage 切换时计数器自动重置。设计精神同源 barkain/claude-code-workflow-orchestration 的 adaptive nudge，但保留 dev-harness 独有的"硬续跑"差异化（不引入 PreToolUse hook，沿用现有 6 道防线架构）。
+
+### Changed
+
+- `defaults/skill-spec.md`：SKILL.md 行数硬上限 50 → **200 行**，与 `docs/design-philosophy.md` 红线 4 对齐；推荐 < 80 行，超出拆 `resources/`。
+- `AGENTS.md`：v3.4.1 模型异构表（code-reviewer / security-reviewer 改 sonnet，architect 留 opus）+ ABC 配套段落补齐。
+
+### Design Reference
+
+三件套取舍基于 2026-05-11 完成的《Coding Agent Harness 框架：纵向五幕剧 × 横向六层江湖》横纵分析报告（私有 `.design/coding-agent-harness_横纵分析报告.md`），覆盖 19 个同类项目对比。结论：抄 Superpowers Announce / mbruhler fallback / barkain nudge 精神；明确不抄 catlog22 multi-CLI / mbruhler DSL / Aider git-as-state（详见报告第 4.4 节三剧本推演）。
+
+---
+
 ## [3.4.1] — 2026-05-08
 
 ### Added — v4 ABC three-pillar foundation

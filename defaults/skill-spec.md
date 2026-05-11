@@ -38,7 +38,8 @@ description: {一句话描述，<100 字符}
 ## 原则
 
 - 约束声明优于步骤指令 — "不跨 Phase 改文件"比"Step 1: 打开文件, Step 2: 修改"更有效
-- SKILL.md 不超过 50 行 — 超出部分拆到引用文件
+- SKILL.md 不超过 200 行（与 `docs/design-philosophy.md` 红线 4 对齐） — 超出部分拆到引用文件
+- 推荐 < 80 行；> 80 行说明该 SKILL 承担了多个职责，考虑拆分到 `resources/` 按需加载
 - 语言/框架特化必须拆到独立文件 — Claude 只加载项目对应的那份
 - 引用文件用自然语言指引 — "读取 lang-python.md"，不需要特殊语法
 - 脚本路径统一用 `${CLAUDE_PLUGIN_ROOT}/scripts/xxx`

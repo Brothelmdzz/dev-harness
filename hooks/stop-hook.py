@@ -15,6 +15,13 @@ v3.0 改进:
   - 防线 4: 总运行时长上限 (默认 2h)
   - 防线 5: 滑动窗口频率限制 (5min 内 > 10 次 → 死循环)
   - 防线 6: error_count >= max_retries → 死循环
+
+v3.4.2 改进（Nudge 软提醒层）:
+  - 防线 3/4/5 首次触发 → advisory + 续跑（让 Claude 自纠偏），
+    同 stage 内再次触发 → 原硬停逻辑。计数器在 stage 切换时自动重置。
+  - 设计动机：保留"硬续跑"差异化优势，但在硬停之前给一次软提醒，
+    让 Claude 有机会自己产出阶段结果或转 remember；
+    跟 barkain 风格的"5 级 nudge"思路同源但更轻量（不引入 PreToolUse hook）。
 """
 import json, sys
 from pathlib import Path
@@ -400,12 +407,45 @@ def main():
                  f"暂停 {lim['rate_limit_pause_min']}min，恢复时间: {state['resume_at']}")
         sys.exit(0)
 
+    # ==================== Nudge: 软提醒分级（v3.4.2 起）====================
+    # 防线 3/4/5 首次触发 → advisory + 续跑（让 Claude 自纠偏）；
+    # 同一防线在同一 stage 内再次触发 → 原有 hard stop 逻辑。
+    # 切换 stage 时计数器自动重置（确保新阶段是干净的）。
+    nudge = state.setdefault("nudge_state", {})
+    if nudge.get("stage") != current:
+        nudge["stage"] = current
+        nudge["counts"] = {}
+    nudge_counts = nudge["counts"]
+
+    def _soft_or_hard(defense_name, advisory_msg, hard_log_msg):
+        """第一次触发某防线：advisory + 续跑；第二次（同 stage 内）：硬停。
+        返回 "soft" 表示已注入 advisory 并准备续跑（调用方应 return），
+        返回 "hard" 表示该执行原硬停逻辑（调用方应 sys.exit(0)）。"""
+        if nudge_counts.get(defense_name, 0) == 0:
+            nudge_counts[defense_name] = 1
+            save_state(state, state_file)
+            log_eval(project_root, state, f"{defense_name}_advisory",
+                     f"软提醒 1/2 · {hard_log_msg}")
+            output_block(advisory_msg, state, project_root)
+            return "soft"
+        log_eval(project_root, state, defense_name,
+                 f"hard stop (after 1 advisory) · {hard_log_msg}")
+        return "hard"
+
     # ==================== 防线 3: 单阶段超时 ====================
     if stage.get("started_at"):
         stage_elapsed = elapsed_seconds(stage["started_at"])
         if stage_elapsed > lim["stage_timeout"]:
-            log_eval(project_root, state, "stage_timeout",
-                     f"{current} 运行 {stage_elapsed:.0f}s > {lim['stage_timeout']}s")
+            result = _soft_or_hard(
+                "stage_timeout",
+                f"[Dev Harness 软提醒 1/2] 当前阶段 `{current}` 已运行 {stage_elapsed:.0f}s，"
+                f"超过单阶段建议时长 {lim['stage_timeout']}s。\n"
+                f"请尽快产出阶段结果；如果卡住了，建议拆分子任务或转入 remember。\n"
+                f"再次触发同一防线将硬停止本会话。",
+                f"{current} 运行 {stage_elapsed:.0f}s > {lim['stage_timeout']}s",
+            )
+            if result == "soft":
+                return
             sys.exit(0)
 
     # ==================== 防线 4: 总运行时长 ====================
@@ -413,15 +453,31 @@ def main():
     if task_started:
         total_elapsed = elapsed_seconds(task_started)
         if total_elapsed > lim["max_duration"]:
-            log_eval(project_root, state, "total_timeout",
-                     f"总时长 {total_elapsed:.0f}s > {lim['max_duration']}s")
+            result = _soft_or_hard(
+                "total_timeout",
+                f"[Dev Harness 软提醒 1/2] 任务总运行时长 {total_elapsed:.0f}s，"
+                f"超过上限 {lim['max_duration']}s。\n"
+                f"建议立即触发 /remember 保存进度，由用户决定是否新会话续跑。\n"
+                f"再次触发同一防线将硬停止本会话。",
+                f"总时长 {total_elapsed:.0f}s > {lim['max_duration']}s",
+            )
+            if result == "soft":
+                return
             sys.exit(0)
 
     # ==================== 防线 5: 滑动窗口频率限制 ====================
     recent_count = count_recent_events(eval_log, minutes=lim["window_minutes"])
     if recent_count > lim["max_events"]:
-        log_eval(project_root, state, "frequency_limit",
-                 f"{lim['window_minutes']}min 内 {recent_count} 次续跑 > {lim['max_events']}")
+        result = _soft_or_hard(
+            "frequency_limit",
+            f"[Dev Harness 软提醒 1/2] 最近 {lim['window_minutes']}min 内已续跑 {recent_count} 次，"
+            f"超过窗口上限 {lim['max_events']}。\n"
+            f"这通常意味着死循环。请审视当前 phase 是否真的在推进，必要时停下来报告用户。\n"
+            f"再次触发同一防线将硬停止本会话。",
+            f"{lim['window_minutes']}min 内 {recent_count} 次续跑 > {lim['max_events']}",
+        )
+        if result == "soft":
+            return
         sys.exit(0)
 
     # ==================== implement 阶段续跑逻辑（统一处理） ====================

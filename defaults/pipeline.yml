@@ -16,6 +16,12 @@ stages:
     depends_on: [prd]
     when: "route in [A, B, C]"
     human: true
+    # plan 阶段的等待策略（v3.4.2+）：
+    #   wait         — 默认，plan 写完停下等用户说"通过"再进入 implement
+    #   auto-approve — 跳过审批，plan 写完立即 implement（适合微小变更/yolo 模式）
+    #   skip         — 跳过 plan 阶段（仅 D 路线、修 typo 等极简任务）
+    # 用户可在 .claude/dev-config.yml 中用 plan.fallback 覆盖
+    fallback: wait
 
   - name: implement
     depends_on: [plan]

@@ -5,6 +5,22 @@ description: 开发流水线编排器 — 自动检测状态、三层 Skill 解�
 
 # /dev — 开发流水线编排器
 
+## 启动声明（必读 · 不可跳过）
+
+收到 `/dev` 调用后，**第一条回复必须严格按以下格式开头**：
+
+> Using `dev-harness:dev` skill — running Step 0 (并行 3 条检测) now.
+
+然后**在同一条回复内立即并行调用**下面"启动"段的 3 条 Bash 命令。
+
+**禁止行为**：
+
+- 只回复"收到，按 dev-harness 流程启动..."然后停下等下一轮
+- 用抽象总结（"我会先检测环境"）代替实际 Bash 执行
+- 只列出要做什么而不真正调用工具
+
+**Why**：用户输入 `/dev` 是开始动作，不是请求解说。把"意图声明"绑死到"立即执行"，是 harness engineering 的核心防摆烂手段（参考 superpowers `executing-plans` skill 的 "Announce at start" 同源设计）。
+
 ## 约束
 
 - 每完成一个阶段/Phase，必须 `harness.py update` — 续跑的唯一依据
@@ -79,7 +95,14 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts
 需要多轮对话。产出: `.claude/project-design/*-prd.md`
 
 ### plan（路线 A/B/C）
-需要用户审批。产出: `.claude/plans/*.md`。用户说"通过"后立即进入 implement。
+
+产出: `.claude/plans/*.md`。**等待策略读 `pipeline.yml` 或 `dev-config.yml` 的 `plan.fallback`**：
+
+- `fallback: wait`（默认）— plan 写完停下，明确告诉用户"请 review，说'通过'后我会继续"。等审批
+- `fallback: auto-approve` — plan 写完立即 `harness.py update plan DONE` 并进入 implement，不等用户。**告诉用户已自动通过**但不要等回复
+- `fallback: skip` — 跳过整个 plan 阶段（D 路线/修 typo 类极简任务）
+
+无配置时默认 `wait`。**禁止**在 `wait` 模式下用任何形式自作主张进入 implement。
 
 ### implement
 读取 `.claude/plans/` 下的计划文档，逐 Phase 执行。

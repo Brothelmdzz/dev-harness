@@ -7,6 +7,13 @@ gates:
   build: "echo 'ERROR: 未配置构建命令' && exit 1"
   test: "echo 'ERROR: 未配置测试命令' && exit 1"
 
+# Plan 阶段等待策略（可选，v3.4.2+）— 默认 wait
+# plan:
+#   fallback: wait         # wait | auto-approve | skip
+#                          # wait: plan 写完停下等用户说"通过"（默认，严肃任务推荐）
+#                          # auto-approve: 不等审批直接 implement（yolo 模式，适合微小变更）
+#                          # skip: 跳过 plan 阶段（仅 D 路线/修 typo 等极简任务）
+
 # 跨厂商对抗审查（可选）— 装了 codex cli 时自动启用第 4 路审查
 # review:
 #   cross_vendor:
