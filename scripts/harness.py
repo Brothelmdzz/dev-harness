@@ -21,6 +21,7 @@ from lib.pipeline import (
     pipeline_is_terminal as _pipeline_is_terminal,
 )
 from lib.plan import parse_phases, parse_phases_from_plan_dir
+from lib.pitfall import capture_failure as _pitfall_capture_failure
 
 PROJECT_ROOT = find_project_root()
 STATE_FILE = PROJECT_ROOT / ".claude" / "harness-state.json"
@@ -431,12 +432,36 @@ def cmd_update(args):
                     if 0 <= idx < len(s["phases"]):
                         p = s["phases"][idx]
                         if args.gate:
+                            # v4.0 Gate Feedback Loop：失败的 gate 自动入 pitfall journal，
+                            # 续跑前 build_pitfall_context() 会把它当 ground truth 注入下一轮 prompt
+                            detail_map = {}
+                            for d in (args.gate_detail or []):
+                                k, _, v = d.partition("=")
+                                if k and v:
+                                    detail_map[k] = v
                             for g in args.gate:
                                 parts = g.split("=", 1)
-                                if len(parts) == 2:
-                                    if "gates" not in p:
-                                        p["gates"] = {}
-                                    p["gates"][parts[0]] = parts[1].lower() == "pass"
+                                if len(parts) != 2:
+                                    continue
+                                gate_name, gate_result = parts[0], parts[1].lower()
+                                if "gates" not in p:
+                                    p["gates"] = {}
+                                p["gates"][gate_name] = (gate_result == "pass")
+                                if gate_result != "pass":
+                                    detail = detail_map.get(gate_name, "")
+                                    try:
+                                        _pitfall_capture_failure(
+                                            PROJECT_ROOT,
+                                            category=gate_name if gate_name in ("build", "test", "lint", "runtime", "deploy") else "other",
+                                            phase=stage_name,
+                                            summary=(detail.split("\n", 1)[0][:160] if detail else f"{gate_name} 门禁失败（{stage_name} phase {args.phase}）"),
+                                            root_cause=detail,
+                                            resolution="",
+                                            extra={"phase_name": p.get("name", ""), "gate": gate_name},
+                                        )
+                                    except Exception:
+                                        # 不能让 pitfall 写入失败导致 CLI 退出
+                                        pass
 
                 # 错误计数
                 if args.error:
@@ -1118,7 +1143,10 @@ def main():
     p_upd.add_argument("stage")
     p_upd.add_argument("status")
     p_upd.add_argument("--phase", type=int, default=None)
-    p_upd.add_argument("--gate", action="append", default=[])
+    p_upd.add_argument("--gate", action="append", default=[],
+                       help="门禁结果，格式 name=pass|fail，可重复")
+    p_upd.add_argument("--gate-detail", action="append", default=[],
+                       help="门禁失败详情，格式 name=具体错误信息，可重复；fail 时自动入 pitfall journal")
     p_upd.add_argument("--error", action="store_true")
     p_upd.add_argument("--auto-fixed", action="store_true")
     p_upd.set_defaults(func=cmd_update)

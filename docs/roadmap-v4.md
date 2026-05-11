@@ -61,7 +61,14 @@
 - 数据源：harness-state.json + gate-checker 结果 + git diff stats
 - 输出方式：hook stdout（Claude Code 会注入到上下文）
 
-### 1.2 Gate Result Feedback Loop
+### 1.2 Gate Result Feedback Loop  `[DONE in v3.4.3]`
+
+> **落地说明（2026-05-11）**：v3.4.3 闭环完成，但**实现路径跟原方案不同**——没有新增 PostToolUse hook，而是利用已有的 Pitfall Journal（v3.4.1）+ stop-hook block reason（v3.4.2 nudge）闭环。具体三处改动：
+> 1. `harness.py update --gate xx=fail` 自动 `capture_failure()` 入 `.claude/pitfall-journal.jsonl`
+> 2. 新增 `--gate-detail name=具体错误` CLI 参数，把失败详情写进 pitfall 的 `summary` / `root_cause`
+> 3. stop-hook `_build_context_summary` 对 IN_PROGRESS phase 强调失败 gate（`(FAIL: test)`）
+>
+> 关键认知：失败信号入口已经存在（CLI 调用），不需要新 hook。详见 `CHANGELOG.md [3.4.3]`。
 
 **问题**：gate-checker 跑完 build/test，结果写到 state 里，但 Claude 不一定会去读。
 

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.4.3] — 2026-05-11
+
+### Added — v4.0 Gate Feedback Loop（Phase 1 第一刀）
+
+- **`harness.py update --gate xx=fail` 自动入 pitfall journal**（`scripts/harness.py` cmd_update）：失败的 `build` / `test` / `lint` / `runtime` / `deploy` 类 gate 会调 `lib.pitfall.capture_failure()` 写入 `.claude/pitfall-journal.jsonl`，下次 stop-hook 续跑时 `build_pitfall_context()` 自动把它当 ground truth 注入到 block reason 末尾。
+- **新增 `--gate-detail` CLI 参数**（`scripts/harness.py`）：格式 `--gate-detail name=具体错误信息`，可重复，跟 `--gate` 对应。失败时写入 pitfall 的 `summary` + `root_cause`，让 agent 续跑时直接看到"test failed at auth.test.ts:42 expected 200 got 401"而不是空洞的"test failed"。
+- **stop-hook `_build_context_summary` 显示 IN_PROGRESS phase 的失败 gate**（`hooks/stop-hook.py`）：原先只在 phase `DONE` 时显示 gates；现在 `IN_PROGRESS` 时也强调失败的 gate（`(FAIL: test, lint)`），失败的 gate 是 agent 当前最需要的 ground truth。
+
+### Changed
+
+- **`build_pitfall_context()` 去重 + 截断**（`scripts/lib/pitfall.py`）：原先无脑拼接"summary（根因: root_cause）"，导致 `--gate-detail` 写入时 summary 经常是 root_cause 的截断前缀，输出重复占 prompt 空间。现在 summary 跟 root_cause 完全相同或互为前缀时省略根因，root_cause 超过 200 字符自动截断+省略号。
+- **`docs/roadmap-v4.md` 1.2 标 `[DONE in v3.4.3]`**：补充落地说明，记录实际实现路径跟原方案的差异（没新增 PostToolUse hook，而是 hook 进 cmd_update + 复用已有 pitfall 闭环），防止未来 Claude 读 roadmap 重复造轮子。
+
+### Design Reference
+
+这是 `docs/roadmap-v4.md` Phase 1 (Agent Eyes) 1.2 Gate Result Feedback Loop 的最小落地。关键洞察：闭环已经存在（v3.4.1 Pitfall + v3.4.2 nudge），缺的只是接通 build/test → pitfall journal 这条线。三处改动 < 40 行代码，但闭合了"失败信号 → 自动记录 → 续跑前注入"完整链路。
+
+跳过 1.1 Pipeline Context Injection 的原因：PostToolUse 每次工具调用都触发频率过高，需要先有 eval 数据再判断 ROI。
+
+---
+
 ## [3.4.2] — 2026-05-11
 
 ### Added — 防摆烂三件套

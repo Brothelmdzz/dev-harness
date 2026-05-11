@@ -201,9 +201,18 @@ def _build_context_summary(state, project_root):
                     pname = p.get("name", "?")
                     pstatus = p.get("status", "PENDING")
                     gates = p.get("gates", {})
-                    if gates and pstatus == "DONE":
-                        gate_str = " ".join(f"{k}={v}" for k, v in gates.items())
-                        phase_details.append(f"{pname}: {pstatus} (gates: {gate_str})")
+                    # v4.0 Gate Feedback Loop：DONE 显示全部 gate；IN_PROGRESS 仅强调失败的 gate
+                    # 失败的 gate 是 agent 当前最需要的 ground truth
+                    if gates:
+                        if pstatus == "DONE":
+                            gate_str = " ".join(f"{k}={'pass' if v else 'FAIL'}" for k, v in gates.items())
+                            phase_details.append(f"{pname}: {pstatus} (gates: {gate_str})")
+                        else:
+                            failed = [k for k, v in gates.items() if not v]
+                            if failed:
+                                phase_details.append(f"{pname}: {pstatus} (FAIL: {', '.join(failed)})")
+                            else:
+                                phase_details.append(f"{pname}: {pstatus}")
                     else:
                         phase_details.append(f"{pname}: {pstatus}")
                 lines.append("Phases: " + " | ".join(phase_details))

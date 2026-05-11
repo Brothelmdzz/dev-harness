@@ -139,11 +139,15 @@ def build_pitfall_context(project_root, max_recent=5):
     lines = ["", "", "最近踩坑（避免重复同类错误）:"]
     for e in entries:
         cat = e.get("category", "?")
-        summary = e.get("summary", "")
-        root = e.get("root_cause", "")
+        summary = (e.get("summary", "") or "").strip()
+        root = (e.get("root_cause", "") or "").strip()
         line = f"- [{cat}] {summary}"
-        if root:
-            line += f"（根因: {root}）"
+        # v3.4.3 去重：summary 经常是 root_cause 的截断前缀（cmd_update 取 detail.split('\n',1)[0][:160] 做 summary、完整 detail 做 root_cause）。
+        # 如果两者完全相同或互为前缀，不重复输出"（根因: ...）"，避免稀释信号占 prompt 空间。
+        # root_cause 过长时截断到 200 字符——完整 stack trace 应该让 Claude 自己读日志，不是塞进 block reason。
+        if root and root != summary and not summary.startswith(root) and not root.startswith(summary):
+            truncated = (root[:200].rstrip() + "…") if len(root) > 200 else root
+            line += f"（根因: {truncated}）"
         lines.append(line)
 
     return "\n".join(lines)
