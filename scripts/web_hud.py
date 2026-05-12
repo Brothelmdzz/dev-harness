@@ -127,8 +127,17 @@ def start_web_hud(port=WEB_HUD_PORT, bind="127.0.0.1",
             self.end_headers()
             last_mtime = 0.0
             projects_mtime = 0.0
+            # v3.4.4 MEDIUM-A fix：SSE 总时长上限 1 小时，避免客户端不主动断开
+            # 时连接线程永久占用（Chrome 后台标签 / 浏览器进程残留场景）。
+            # 客户端会自动重连——浏览器 EventSource 默认行为。
+            SSE_MAX_DURATION_SEC = 3600
+            HEARTBEAT_INTERVAL_SEC = 15  # 定期发 SSE comment 探测客户端是否还在
+            start_ts = time.time()
+            last_heartbeat = start_ts
             try:
                 while True:
+                    if time.time() - start_ts > SSE_MAX_DURATION_SEC:
+                        break  # 强制断开，客户端 EventSource 会自动重连
                     try:
                         cur_mtime = sf.stat().st_mtime if sf.exists() else 0.0
                     except OSError:
@@ -147,6 +156,11 @@ def start_web_hud(port=WEB_HUD_PORT, bind="127.0.0.1",
                         projs = self._find_all_projects()
                         payload = json.dumps(projs, ensure_ascii=False)
                         self.wfile.write(f"event: projects\ndata: {payload}\n\n".encode("utf-8"))
+                        self.wfile.flush()
+                    # SSE comment 心跳探测：客户端死了 wfile.write 会抛 BrokenPipe，主动退出
+                    if now_ts - last_heartbeat > HEARTBEAT_INTERVAL_SEC:
+                        last_heartbeat = now_ts
+                        self.wfile.write(b":hb\n\n")
                         self.wfile.flush()
                     time.sleep(0.5)
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):

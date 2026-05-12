@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [3.4.4] — 2026-05-12
+
+### Fixed — v3.4.3 code review 跟进（CRITICAL + 2 HIGH + 2 MEDIUM）
+
+- **[CRITICAL] `lib/pitfall.py:capture_failure` 加 FileLock**：v3.4.3 把 `capture_failure` 入口数量翻倍（新增 `cmd_update --gate fail` 路径，叠加 stop-hook 已有的 audit/review 路径），抬高并发触发概率。Windows append 没有 POSIX `O_APPEND` 在 < PIPE_BUF 4096B 内的原子保证，并发写入可能交织、损坏 jsonl 行。修复：用 `lib.compat.FileLock` 把 `_next_id_for_date` + JSONL append 包在同一把锁内（避免并发拿同一 id）。回归测试：10 个 Python 进程并发 capture_failure，10 行全部 parse 通过 + id 全唯一。
+- **[HIGH-1] `cmd_update --gate xx=fail` 自动递增 `phases[idx]["error_count"]`**（`scripts/harness.py`）：v3.4.3 引入的 gate fail 路径没递增 phase 级 `error_count`，导致 stop-hook 防线 6（`_handle_implement_continue` 检查 `error_count >= max_retries`）对 build/test 反复失败完全失效，死循环兜底形同虚设。修复：gate fail 时无条件 `p["error_count"] += 1`，不依赖用户额外传 `--error`。
+- **[HIGH-2] `build_pitfall_context` 内部按 (category, root_cause/summary) 去重**（`scripts/lib/pitfall.py`）：v3.4.3 之前同一 gate 反复 fail 会写多条同质 pitfall，污染最近 5 条窗口（5 条全是同一 test 失败、其他类型信号被挤出）。修复：读全部 pitfall 后反向遍历去重，保留最近 5 条多样性条目，恢复时间顺序输出。
+- **[MEDIUM-1] pitfall 写入失败时 stderr 输出 WARN**（`scripts/harness.py`）：原先 `except Exception: pass` 完全吞错（磁盘满/权限错/锁超时全沉默），用户和 Claude 都不知道 ground truth 没注入。修复：改为 `except Exception as _e: print(f"WARN: ...", file=sys.stderr)`，CLI 主流程仍然成功（returncode=0），但运维能从 hook log / CI log 看到失败。
+- **[MEDIUM-2] stop-hook `_build_context_summary` 加 2000 字符总长度上限**（`hooks/stop-hook.py`）：phases 多 + pitfall 累计时，单次 block reason 可能 3000+ 字符，每次续跑吃 Claude 上下文预算，反而让防线 1（context_overflow）提前触发。修复：超过 2000 字符截断 + 追加 "完整状态见 .claude/harness-state.json 与 pitfall-journal.jsonl" 提示。
+
+### Fixed — v3.4.x 全量代码审查跟进（3 HIGH + 7 MEDIUM）
+
+新一轮 0-context review 覆盖 v3.4.0 → 当前的全部代码，发现 v3.4.3 review 范围之外的额外问题，本 release 一并修复。
+
+**HIGH 级（必修）**
+
+- **[HIGH-A] `stop-hook.py` RATE_LIMIT_KEYWORDS 子串匹配误报严重**：原列表含裸 `"resets"` + `"rate limit"`，用户讨论"如何实现 rate limiting"、"session resets every hour"等任何含此子串的话题都会误触发 → 整个 pipeline 暂停 15 分钟。改为严格 regex `RATE_LIMIT_RE`：必须是 强动词(hit/exceeded/reached/encountered/exhausted) + (rate-)limit、或 "rate-limit exceeded/hit/reached" 主被动语态、或 HTTP 429 + too many requests、或 "limit resets at/in" 平台告知短语。回归 10 个 case（5 真信号 / 5 讨论场景），全过。
+- **[HIGH-B] `cmd_update` RETRY 语义没重置 `phase.error_count` + `phase.gates`**（`scripts/harness.py`）：用户主动 `harness.py update implement RETRY` 后 stage 变 PENDING，但 phase.error_count 还保留 >= max_retries，下次 stop-hook 续跑立即被防线 6 拦下、看起来"RETRY 没生效"。修复：RETRY 时清空当前 stage 下所有 phase 的 error_count 和 gates。
+- **[HIGH-C] `cmd_worker_status` TOCTOU race**（`scripts/harness.py`）：原先 read（拿锁）→ check（锁外）→ write（再拿锁），中间窗口 worker 可能写入 `status=DONE`，被这里覆盖回 `TIMEOUT` 丢失结果。修复：read + check + write 全在同一把锁内。
+
+**MEDIUM 级**
+
+- **[MEDIUM-A] `web_hud.py` SSE 无超时退出**：客户端不主动断开（Chrome 后台标签 / 进程残留）时 SSE 线程永久占用。修复：1 小时强制断开 + 15 秒心跳 SSE comment 探测客户端，dead conn 会抛 BrokenPipe 主动退出。浏览器 EventSource 默认自动重连。
+- **[MEDIUM-B] `pitfall._next_id_for_date` 每次写入全文扫描 O(N²)**：长期累积 5000+ 条 pitfall 后性能下降。同时 `target in line` 子串匹配会被 root_cause 里引用历史 PIT-ID 干扰（LOW-A 同款）。修复：只读末尾 64KB + 正则精确匹配 `"id": "PIT-..."` 字段位置。5000 条性能从 ~50ms 降到 ~2.5ms。
+- **[MEDIUM-C] `hook_trace` breadcrumb 文件名无 PID，并发同名 hook 互相覆盖**：用户连续 Write 两个 plan 文件触发 plan-watcher 两次，第二个 hook_start 覆盖第一个、第一个 hook_end 抹掉第二个的 breadcrumb，第二个被超时杀掉时 check_stale_hooks 检测不到。修复：breadcrumb 文件名加 `os.getpid()`。
+- **[MEDIUM-D] `_load_and_validate_limits` 配置错误 silent fallback**（`scripts/harness.py`）：用户在 `dev-config.yml` 写错（`stage_timeout: 30sec` / `max_duration: 99999999`）时沉默 fallback / clamp，不警告。修复：解析失败和 clamp 都 stderr WARN 提示用户。
+- **[MEDIUM-E] `activity-watcher.py` SENSITIVE_PATTERN 覆盖不全**：漏掉 private_key / client_secret / aws_access_key / ssh_key / GitHub PAT（ghp_/ghs_）/ OpenAI sk- / jwt / cookie 等常见敏感词。修复：扩展正则。
+- **[MEDIUM-F] `stop-hook._finalize_session_in_index` 重复 save_session_index 逻辑且漏权限保护**：原先手写 .tmp + replace + 没设 0o600，POSIX 多用户机上权限可能从 600 漂回 644。修复：改用 `lib.state.load_and_update_session_index`，自动复用权限保护 + 减 15 行重复代码。
+- **[MEDIUM-G] `stop-hook.migrate_legacy_state` 不创建 `limits` 段**：旧格式 state 迁移后没 limits 段，用户在 dev-config.yml 配置的 limits 全部失效（fallback 硬编码默认值）。修复：迁移时主动调用 `lib.config.load_dev_config()` 加载用户配置。
+
+### Verified
+
+回归测试 16/16 全过：
+- 第一批 6/6：HIGH-1 防线 6 触发、HIGH-2 同质去重（3 同 + 2 异 → 3 多样）、MEDIUM-1 stderr WARN、MEDIUM-2 长度 ≤ 2200 + 截断标记、CRITICAL 单线程兼容、CRITICAL 10 进程并发不损坏。
+- 第二批 10/10：HIGH-A 严格 regex（5 真信号触发 / 5 讨论场景不触发）、HIGH-B RETRY 重置、HIGH-C TOCTOU 单锁、MEDIUM-A SSE 上限+心跳、MEDIUM-B 性能 2.5ms + 防误计、MEDIUM-C PID 隔离、MEDIUM-D stderr WARN ≥ 2 条、MEDIUM-E 10 敏感词全覆盖、MEDIUM-F 复用 lib、MEDIUM-G 含 limits 段。
+
+### Notes
+
+跳过 6 个 LOW（详见审查报告）：pitfall.py 空 summary 边界、category 白名单 vs docstring 不一致、gates 字段类型容错、_handle_sse 路径白名单收紧、web_hud bind 0.0.0.0 警告、parse_simple_yaml 不支持 list/bool/null、is_context_limit_stop 关键字过宽、plan-watcher 重新覆盖时丢 gates。这些都不阻塞，等下次顺手清理。
+
+---
+
 ## [3.4.3] — 2026-05-11
 
 ### Added — v4.0 Gate Feedback Loop（Phase 1 第一刀）

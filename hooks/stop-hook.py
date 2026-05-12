@@ -43,7 +43,33 @@ _DEFAULT_SLIDING_WINDOW_MIN = 5
 _DEFAULT_SLIDING_WINDOW_MAX_EVENTS = 10
 _DEFAULT_CONTEXT_OVERFLOW_PCT = 80
 _DEFAULT_RATE_LIMIT_PAUSE_MIN = 15
-RATE_LIMIT_KEYWORDS = ["rate limit", "hit your limit", "resets", "rate_limit", "too many requests"]
+# v3.4.4 HIGH-A fix：原来用列表子串匹配（含裸 "resets"），用户讨论 rate limit / session reset
+# 等任何话题都会误触发 → 整个 pipeline 暂停 15 分钟。改用严格 regex 模式，要求强信号词组：
+# - 完整词边界 "rate limit / rate_limit"
+# - 平台明确告知短语 "hit your/the limit"
+# - HTTP 429 状态码（独立词）
+# - "too many requests" 短语
+# - "limit resets at/in" 平台告知短语（不再匹配裸 "resets"）
+import re as _re_rl
+# v3.4.4 HIGH-A 严格化：必须是 强动词 + (rate )limit 才算信号，单独 "rate limit" / "rate limiting"
+# 不触发——用户讨论"如何实现 rate limiting"等场景太常见。
+# 触发条件（OR）：
+#   1. <hit|reached|exceeded|encountered|exhausted> [the/your/a/my/our] (rate-)limit
+#   2. rate-limit <exceeded|reached|exhausted|hit|hits>（动词在后）
+#   3. 标准 HTTP 信号：429 / too many requests
+#   4. 平台告知格式："limit resets at/in ..."
+#   5. HTTP header 名 x-rate-limit-*
+RATE_LIMIT_RE = _re_rl.compile(
+    r"\b(?:hit|reached|exceeded|encountered|exhausted)\s+"
+    r"(?:the\s+|your\s+|a\s+|my\s+|our\s+)?(?:rate[\s_-]?)?limit"
+    r"|rate[\s_-]?limit\s+(?:has\s+been\s+|was\s+|were\s+|been\s+)?"
+    r"(?:exceeded|reached|exhausted|hit|hits)"
+    r"|too\s+many\s+requests"
+    r"|\b429\b"
+    r"|limit\s+resets?\s+(?:at|in)\b"
+    r"|x[-_]?rate[-_]?limit",
+    _re_rl.IGNORECASE,
+)
 
 def _get_limits(state):
     """从 state["limits"] 读取参数，fallback 硬编码默认值"""
@@ -140,6 +166,25 @@ def migrate_legacy_state(old):
     else:
         task_obj = task_name  # 已经是对象
 
+    # v3.4.4 MEDIUM-G fix：迁移时主动加载 dev-config.yml 的 limits 段，
+    # 否则迁移后的 state 没 limits 段，stop-hook _get_limits() 只能 fallback 硬编码默认值，
+    # 用户在 dev-config.yml 配置的所有 limits 失效。
+    try:
+        from lib.config import load_dev_config as _lib_load_dev_config
+        _project_for_cfg = old.get("_project_root") or "."
+        _cfg = _lib_load_dev_config(_project_for_cfg)
+        _raw_limits = _cfg.get("limits", {}) if isinstance(_cfg.get("limits"), dict) else {}
+        _limits = {
+            "stage_timeout":        int(_raw_limits.get("stage_timeout", 1800)),
+            "max_duration":         int(_raw_limits.get("max_duration", 7200)),
+            "window_minutes":       int(_raw_limits.get("window_minutes", 5)),
+            "max_events":           int(_raw_limits.get("max_events", 10)),
+            "context_overflow_pct": int(_raw_limits.get("context_overflow_pct", 80)),
+            "rate_limit_pause_min": int(_raw_limits.get("rate_limit_pause_min", 15)),
+            "max_retries":          int(_raw_limits.get("max_retries", 3)),
+        }
+    except Exception:
+        _limits = {}  # 任何异常都不影响迁移本身，_get_limits 会 fallback 硬编码默认值
     return {
         "version": "1.0",
         "project": old.get("project", ""),
@@ -147,10 +192,12 @@ def migrate_legacy_state(old):
         "pipeline": pipeline,
         "current_stage": old.get("current_stage", ""),
         "paused": old.get("paused", False),
+        "limits": _limits,
         "metrics": {
             "total_errors": 0, "auto_fixed": 0, "blocking": 0,
-            "max_retries": 3, "stages_completed": 0, "auto_continues": 0,
-            "max_duration": 7200,
+            "max_retries": _limits.get("max_retries", 3),
+            "stages_completed": 0, "auto_continues": 0,
+            "max_duration": _limits.get("max_duration", 7200),
         },
         "_migrated_from": "legacy",
     }
@@ -235,6 +282,14 @@ def _build_context_summary(state, project_root):
         result = "\n\n当前状态:\n" + "\n".join("- " + l for l in lines)
     if pitfall_ctx:
         result += pitfall_ctx
+
+    # v3.4.4 MEDIUM-2 fix：总长度上限。phases 多/pitfall 累计时 reason 可能 ~3000+ 字符，
+    # 每次续跑都吃 Claude 几千 tokens 上下文预算，反而让防线 1 context_overflow 提前触发。
+    # 2000 字符约 500-800 tokens（中英文混合），是续跑摘要的合理上限。
+    MAX_REASON_CTX = 2000
+    if len(result) > MAX_REASON_CTX:
+        result = result[:MAX_REASON_CTX].rstrip() + \
+                 "\n…(摘要截断，完整状态见 .claude/harness-state.json 与 .claude/pitfall-journal.jsonl)"
     return result
 
 # ==================== 主逻辑 ====================
@@ -407,7 +462,7 @@ def main():
 
     # ==================== 防线 2: Rate Limit 检测 ====================
     last_msg = hook_input.get("last_assistant_message", "")
-    if any(kw in last_msg.lower() for kw in RATE_LIMIT_KEYWORDS):
+    if RATE_LIMIT_RE.search(last_msg):
         state["paused"] = True
         state["pause_reason"] = "rate_limit"
         state["resume_at"] = (now_utc() + timedelta(minutes=lim["rate_limit_pause_min"])).isoformat()
@@ -672,25 +727,19 @@ def save_state(state, path):
 
 def _finalize_session_in_index(session_id):
     """兜底清理：stop-hook 触发终结类防线时标记 session 为 finished。
-    避免异常退出的 session 残留在中央索引占位。"""
+    避免异常退出的 session 残留在中央索引占位。
+
+    v3.4.4 MEDIUM-F fix：原先重复 save_session_index 逻辑，且 POSIX 上没设 0o600，
+    导致权限可能从 600 漂回 644。改用 lib.state.load_and_update_session_index，
+    自动复用文件权限保护 + 减少代码重复。"""
     if not session_id:
         return
-    index_file = Path.home() / ".claude" / "dev-harness-sessions.json"
-    if not index_file.exists():
-        return
     try:
-        lock = FileLock(str(index_file) + ".lock", timeout=3)
-        with lock:
-            index = json.loads(index_file.read_text(encoding="utf-8"))
+        from lib.state import load_and_update_session_index
+        def _update(index):
             if session_id in index and not index[session_id].get("finished_at"):
                 index[session_id]["finished_at"] = now_iso()
-                import os as _os
-                tmp = index_file.with_suffix(".json.tmp")
-                tmp.write_text(
-                    json.dumps(index, ensure_ascii=False, indent=2),
-                    encoding="utf-8"
-                )
-                _os.replace(str(tmp), str(index_file))
+        load_and_update_session_index(_update)
     except Exception:
         pass
 

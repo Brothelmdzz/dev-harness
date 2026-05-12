@@ -196,24 +196,36 @@ def _load_dev_config():
         return {}
 
 def _load_and_validate_limits(config):
-    """从 dev-config 加载 limits，校验范围，fallback 默认值"""
+    """从 dev-config 加载 limits，校验范围，fallback 默认值。
+
+    v3.4.4 MEDIUM-D fix：clamp / parse 失败时 stderr WARN，
+    避免用户写错配置（如 stage_timeout: 30sec）后沉默 fallback 不自知。
+    """
     raw = config.get("limits", {})
     if isinstance(raw, str):
         raw = {}
     result = dict(DEFAULT_LIMITS)
     for key, default in DEFAULT_LIMITS.items():
         val = raw.get(key)
-        if val is not None:
-            try:
-                val = type(default)(val)
-                lo, hi = LIMITS_BOUNDS.get(key, (None, None))
-                if lo is not None and val < lo:
-                    val = lo
-                if hi is not None and val > hi:
-                    val = hi
-            except (ValueError, TypeError):
-                val = default
-            result[key] = val
+        if val is None:
+            continue
+        try:
+            val = type(default)(val)
+        except (ValueError, TypeError):
+            print(f"WARN: dev-config.yml limits.{key}={raw[key]!r} 无法转换为 {type(default).__name__}，"
+                  f"fallback 默认值 {default}", file=sys.stderr)
+            result[key] = default
+            continue
+        lo, hi = LIMITS_BOUNDS.get(key, (None, None))
+        orig = val
+        if lo is not None and val < lo:
+            val = lo
+        if hi is not None and val > hi:
+            val = hi
+        if val != orig:
+            print(f"WARN: dev-config.yml limits.{key}={orig} 超出范围 [{lo},{hi}]，clamp 到 {val}",
+                  file=sys.stderr)
+        result[key] = val
     return result
 
 # ==================== 初始化 ====================
@@ -410,6 +422,10 @@ def cmd_update(args):
         sys.exit(1)
 
     # RETRY 语义: 重置 FAILED→PENDING（P2-2: 死状态恢复）
+    # v3.4.4 HIGH-B fix：同时重置当前 stage 下所有 phase 的 error_count + gates。
+    # 原先只改 stage status，但 phase.error_count 还保留 >= max_retries，下次 stop-hook
+    # 续跑时立即被防线 6 拦下 → 用户主动 RETRY 没生效。
+    _retry_reset = (new_status == "RETRY")
     if new_status == "RETRY":
         new_status = "PENDING"
 
@@ -418,6 +434,12 @@ def cmd_update(args):
             if s["name"] == stage_name:
                 prev_status = s["status"]
                 s["status"] = new_status
+                # HIGH-B 续：RETRY 时清空当前 stage 的 phase 错误计数和门禁结果
+                if _retry_reset and "phases" in s:
+                    for ph in s["phases"]:
+                        ph["error_count"] = 0
+                        if "gates" in ph:
+                            ph["gates"] = {}
                 if new_status == "DONE":
                     s["completed_at"] = now_iso()
                     # 幂等保护: 只在首次 DONE 时计数
@@ -448,6 +470,11 @@ def cmd_update(args):
                                     p["gates"] = {}
                                 p["gates"][gate_name] = (gate_result == "pass")
                                 if gate_result != "pass":
+                                    # v3.4.4 HIGH-1 fix：gate fail 显然属于 phase 出错，递增 error_count
+                                    # 让防线 6（stop-hook _handle_implement_continue 检查
+                                    # error_count >= max_retries）对 build/test 反复失败也能正常兜底。
+                                    # 不依赖用户额外传 --error。
+                                    p["error_count"] = p.get("error_count", 0) + 1
                                     detail = detail_map.get(gate_name, "")
                                     try:
                                         _pitfall_capture_failure(
@@ -459,9 +486,12 @@ def cmd_update(args):
                                             resolution="",
                                             extra={"phase_name": p.get("name", ""), "gate": gate_name},
                                         )
-                                    except Exception:
-                                        # 不能让 pitfall 写入失败导致 CLI 退出
-                                        pass
+                                    except Exception as _pitfall_err:
+                                        # v3.4.4 MEDIUM-1 fix：不能让 pitfall 写入失败导致 CLI 退出，
+                                        # 但要可见——写 stderr 而不是 `pass` 完全吞错，
+                                        # 让运维能从 hook log / CI log 看到磁盘满 / 权限错 / 锁超时等。
+                                        print(f"WARN: pitfall capture failed for gate '{gate_name}': {_pitfall_err}",
+                                              file=sys.stderr)
 
                 # 错误计数
                 if args.error:
@@ -1031,18 +1061,17 @@ def cmd_worker_status(args):
     now_dt = datetime.now(timezone.utc)
     for f in sorted(WORKERS_DIR.glob("worker-*.json")):
         try:
+            # v3.4.4 HIGH-C fix：read + check + write 全在同一把锁内，
+            # 否则两段锁之间 worker 自己可能写入 status=DONE，被这里覆盖回 TIMEOUT 丢失结果。
             lock = FileLock(str(f) + ".lock", timeout=2)
             with lock:
                 w = json.loads(f.read_text(encoding="utf-8"))
-            # 超时检测：IN_PROGRESS 且 heartbeat 超过阈值
-            if w.get("status") == "IN_PROGRESS":
-                hb = w.get("heartbeat_at", "")
-                if hb:
-                    hb_dt = datetime.fromisoformat(hb.replace("Z", "+00:00"))
-                    if (now_dt - hb_dt).total_seconds() > WORKER_TIMEOUT_SEC:
-                        w["status"] = "TIMEOUT"
-                        # 写回文件持久化超时状态
-                        with FileLock(str(f) + ".lock", timeout=2):
+                if w.get("status") == "IN_PROGRESS":
+                    hb = w.get("heartbeat_at", "")
+                    if hb:
+                        hb_dt = datetime.fromisoformat(hb.replace("Z", "+00:00"))
+                        if (now_dt - hb_dt).total_seconds() > WORKER_TIMEOUT_SEC:
+                            w["status"] = "TIMEOUT"
                             f.write_text(json.dumps(w, ensure_ascii=False, indent=2), encoding="utf-8")
             workers.append(w)
         except (json.JSONDecodeError, OSError):

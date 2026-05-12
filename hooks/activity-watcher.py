@@ -23,7 +23,16 @@ sys.path.insert(0, str(_plugin_root / "scripts"))
 
 ACTIVITY_MAX = 30
 BASH_TRUNC = 120
-SENSITIVE_PATTERN = re.compile(r'(password|token|secret|apikey|api_key|authorization|bearer)', re.IGNORECASE)
+# v3.4.4 MEDIUM-E fix：扩展敏感词覆盖——原列表漏了 private_key / client_secret /
+# aws_* / ssh_key / GitHub PAT / OpenAI sk- 前缀 / jwt / cookie 等常见类型。
+# activity 字段会被 web_hud SSE 推送到客户端，敏感命令暴露风险。
+SENSITIVE_PATTERN = re.compile(
+    r'password|token|secret|api[-_]?key|apikey|authorization|bearer|'
+    r'private[-_]?key|client[-_]?secret|aws[-_]?(?:access|secret)|'
+    r'ssh[-_]?key|cookie|jwt|'
+    r'ghp_[a-z0-9]{20,}|ghs_[a-z0-9]{20,}|sk-[a-z0-9]{20,}',
+    re.IGNORECASE,
+)
 
 
 from lib.utils import now_iso

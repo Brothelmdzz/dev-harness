@@ -24,6 +24,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 from .utils import now_iso
+from .compat import FileLock
 
 PITFALL_FILE_REL = ".claude/pitfall-journal.jsonl"
 
@@ -54,43 +55,59 @@ def capture_failure(project_root, *, category, summary,
     path = get_pitfall_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    today = datetime.now(timezone.utc).strftime("%Y%m%d")
-    next_id = _next_id_for_date(path, today)
+    # v3.4.4 CRITICAL fix：加 FileLock 防止并发写入导致 jsonl 损坏。
+    # v3.4.3 把入口数量翻倍（cmd_update --gate fail + stop-hook 已有 audit/review capture），
+    # 抬高并发触发概率（Windows append 无原子保证、POSIX 只在 < PIPE_BUF 4096B 内原子）。
+    # next_id 计算和 write 必须在同一把锁内，否则两个并发 capture 会拿到同一个 id。
+    lock = FileLock(str(path) + ".lock", timeout=3)
+    with lock:
+        today = datetime.now(timezone.utc).strftime("%Y%m%d")
+        next_id = _next_id_for_date(path, today)
 
-    entry = {
-        "id": f"PIT-{today}-{next_id:03d}",
-        "occurred_at": now_iso(),
-        "category": category,
-        "phase": phase,
-        "summary": summary,
-        "root_cause": root_cause,
-        "resolution": resolution,
-        "rule_candidate": False,
-        "ab_tested": False,
-    }
-    if extra:
-        entry.update(extra)
+        entry = {
+            "id": f"PIT-{today}-{next_id:03d}",
+            "occurred_at": now_iso(),
+            "category": category,
+            "phase": phase,
+            "summary": summary,
+            "root_cause": root_cause,
+            "resolution": resolution,
+            "rule_candidate": False,
+            "ab_tested": False,
+        }
+        if extra:
+            entry.update(extra)
 
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     return entry["id"]
 
 def _next_id_for_date(path, today):
-    """统计当日已有 pitfall 条数，返回下一个序号"""
+    """统计当日已有 pitfall 条数，返回下一个序号。
+
+    v3.4.4 MEDIUM-B fix：原先每次 capture 都全文扫描 jsonl，长期累积 N 条 → O(N²)。
+    改为只读末尾 64KB 抓最大 NNN——当日条数 << 64KB / 200 bytes/line = 300 行，远够。
+    用正则提取 "PIT-{today}-NNN" 后的数字，取 max + 1。
+    解决 LOW-A 同款：原 `target in line` 子串匹配会被 root_cause 里引用历史 PIT-ID 干扰，
+    新版用正则精确匹配 id 字段位置（PIT-YYYYMMDD-NNN 后必接非数字）。
+    """
     if not path.exists():
         return 1
-    count = 0
-    target = f'"PIT-{today}-'
+    import re as _re
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                # 跳过元数据行（_comment / _schema），它们不会含 PIT- 前缀
-                if target in line:
-                    count += 1
+        with open(path, "rb") as f:
+            f.seek(0, 2)  # 文件末尾
+            size = f.tell()
+            read_size = min(size, 64 * 1024)
+            f.seek(size - read_size)
+            tail = f.read().decode("utf-8", errors="ignore")
     except OSError:
         return 1
-    return count + 1
+    nums = _re.findall(rf'"id"\s*:\s*"PIT-{today}-(\d{{3,}})"', tail)
+    if not nums:
+        return 1
+    return max(int(n) for n in nums) + 1
 
 # ==================== 读取 ====================
 
@@ -131,8 +148,30 @@ def build_pitfall_context(project_root, max_recent=5):
 
     返回 markdown 片段（已包含前导 \\n\\n），可直接拼接到 stop-hook 的 block reason 末尾。
     无 pitfall 时返回空串。
+
+    v3.4.4 HIGH-2 fix：按 (category, root_cause/summary) 去重——避免同 gate 反复 fail
+    时 5 条同质 pitfall 占满窗口、稀释多样性。最新优先保留，恢复时间顺序后输出。
     """
-    entries = read_recent(project_root, max_recent)
+    # 读全部 pitfall（read_recent 内部 max_recent=0 表示不限制）
+    all_entries = read_recent(project_root, max_recent=0)
+    if not all_entries:
+        return ""
+
+    # 反向遍历（最新优先），按 (category, root_cause/summary 前 200 字) 作 key 去重
+    # 取 root_cause 优先，fallback 到 summary，避免根因相同但表面措辞不同被误判为多样性
+    seen = set()
+    deduped = []
+    for e in reversed(all_entries):
+        dedup_text = (e.get("root_cause") or e.get("summary", "") or "")[:200]
+        key = (e.get("category", ""), dedup_text)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(e)
+        if len(deduped) >= max_recent:
+            break
+    entries = list(reversed(deduped))  # 恢复时间顺序（旧→新）
+
     if not entries:
         return ""
 
