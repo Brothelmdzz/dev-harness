@@ -1,6 +1,7 @@
 ---
 name: generic-tdd
 description: TDD 模式实现 — RED-GREEN-REFACTOR 循环，先写测试再写代码。与 implement 阶段集成，强制测试优先。
+model_context: claude-opus-4.5+
 ---
 
 # TDD 模式实现

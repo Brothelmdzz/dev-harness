@@ -1,6 +1,7 @@
 ---
 name: dev
 description: 开发流水线编排器 — 自动检测状态、三层 Skill 解析、Hook 驱动续跑。通用于任何项目。Use when: 用户说"dev/开发/继续开发/下一步"，或新会话需要续接上次进度。
+model_context: claude-opus-4.5+
 ---
 
 # /dev — 开发流水线编排器

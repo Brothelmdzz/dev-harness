@@ -2,6 +2,7 @@
 name: fix
 description: 快速修复 — 单 Skill 模式，只跑 implement + test。Use when: 用户说"修一下/fix/快速修复"。
 model: opus
+model_context: claude-opus-4.5+
 ---
 
 # /fix — 快速修复

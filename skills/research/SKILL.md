@@ -2,6 +2,7 @@
 name: research
 description: 代码库研究 — 委托给 generic-research。并行 subagent 扫描，产出结构化研究文档。
 model: opus
+model_context: claude-opus-4.5+
 ---
 
 # 代码库研究

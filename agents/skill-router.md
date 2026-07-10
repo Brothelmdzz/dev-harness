@@ -6,6 +6,7 @@ tools:
   - Read
   - Bash
   - Glob
+model_context: claude-opus-4.5+
 ---
 
 # Skill 路由器

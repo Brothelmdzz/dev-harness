@@ -1,11 +1,12 @@
 ---
 name: explore
 description: 快速代码搜索。定位文件、搜索符号、分析代码结构。用于 research 阶段并行扫描。
-model: opus
+model: sonnet
 tools:
   - Read
   - Grep
   - Glob
+model_context: claude-opus-4.5+
 ---
 
 # 代码探索者

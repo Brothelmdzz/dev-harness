@@ -2,6 +2,7 @@
 name: review-skill
 description: 单独执行代码审查（三路并行）。Use when: 用户说"审查/review/code review"。
 model: opus
+model_context: claude-opus-4.5+
 ---
 
 # /review — 代码审查

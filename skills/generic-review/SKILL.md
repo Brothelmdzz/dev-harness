@@ -1,6 +1,7 @@
 ---
 name: generic-review
 description: 通用代码审查 — Claude 内部三路并行（code + security + arch）+ 可选第四路跨厂商对抗审查（codex cli），汇总对比。
+model_context: claude-opus-4.5+
 ---
 
 # 通用代码审查

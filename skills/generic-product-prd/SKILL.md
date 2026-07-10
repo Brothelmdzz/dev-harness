@@ -1,6 +1,7 @@
 ---
 name: generic-product-prd
 description: 产品需求文档 — 面向产品经理的多轮需求对齐，产出含用户故事、验收标准、优先级矩阵的结构化 PRD。
+model_context: claude-opus-4.5+
 ---
 
 # 产品需求文档 (PRD)

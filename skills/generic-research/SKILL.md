@@ -1,6 +1,7 @@
 ---
 name: generic-research
 description: 通用代码库研究 — 并行 subagent 扫描代码库，产出结构化研究报告。适用于任何项目。
+model_context: claude-opus-4.5+
 ---
 
 # 通用代码库研究

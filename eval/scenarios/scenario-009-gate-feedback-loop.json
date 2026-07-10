@@ -1,0 +1,45 @@
+{
+  "task_id": "scenario-009-gate-feedback-loop",
+  "task_source": "real-task",
+  "title": "实现 v4.0 Gate Feedback Loop — build/test fail 自动入 pitfall journal",
+  "description": "v4.0 Phase 1 (Agent Eyes) 1.2 Gate Result Feedback Loop。完整闭环：harness.py update --gate name=fail → 自动调 lib.pitfall.capture_failure() → 写入 .claude/pitfall-journal.jsonl → 下次 stop-hook 续跑时 build_pitfall_context() 把它当 ground truth 注入到 block reason 末尾。关键洞察：闭环已经存在（v3.4.1 Pitfall + v3.4.2 nudge），缺的只是接通 build/test → pitfall journal 这条线。三处改动：(1) harness.py cmd_update gate fail 分支调 capture_failure (2) 新增 --gate-detail name=msg CLI 参数让 agent 续跑时直接看到具体错误 (3) stop-hook 在 IN_PROGRESS phase 也显示失败的 gate（原先只在 DONE 时显示）。",
+  "complexity": "medium",
+  "expected_route": "C",
+  "expected_skills": ["generic-implement", "generic-test"],
+  "expected_files_changed": [
+    "scripts/harness.py",
+    "scripts/lib/pitfall.py",
+    "hooks/stop-hook.py"
+  ],
+  "reference_impl": {
+    "similar_files": [
+      "scripts/lib/pitfall.py",
+      "scripts/harness.py",
+      "hooks/stop-hook.py"
+    ],
+    "related_rules": [
+      "docs/design-philosophy.md"
+    ]
+  },
+  "verification": {
+    "command": "bash -c 'cd /tmp/dh-test && rm -rf .claude && mkdir -p .claude && python scripts/harness.py init test --route C-lite && python scripts/harness.py update implement IN_PROGRESS --phase 1 --gate test=fail --gate-detail test=\"auth.test.ts:42 expected 200 got 401\" && test -f .claude/pitfall-journal.jsonl && grep -q \"auth.test.ts:42\" .claude/pitfall-journal.jsonl'",
+    "success_criteria": "gate fail 写入 pitfall journal + detail 含具体错误信息"
+  },
+  "rubric": {
+    "must_pass": [
+      "harness.py update --gate name=fail 自动调 capture_failure（无需额外参数）",
+      "--gate-detail name=msg 参数可重复，与 --gate 对应",
+      "stop-hook._build_context_summary 显示 IN_PROGRESS phase 的失败 gate（如 'FAIL: test, lint'）"
+    ],
+    "should_pass": [
+      "build_pitfall_context 去重：summary 跟 root_cause 完全相同或互为前缀时省略根因",
+      "root_cause 超过 200 字符自动截断 + 省略号",
+      "失败的 gate 名称（build/test/lint/runtime/deploy）走特定 category 分类"
+    ],
+    "nice_to_have": [
+      "回归测试覆盖：同一 gate 连续 fail 3 次后 pitfall journal 有 3 条独立记录",
+      "context summary 总长度有上限（≤ 2000 字符）避免吃 Claude 上下文预算",
+      "docs/roadmap-v4.md 1.2 标 [DONE in v3.4.3]"
+    ]
+  }
+}

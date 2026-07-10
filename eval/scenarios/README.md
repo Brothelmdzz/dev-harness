@@ -1,7 +1,8 @@
 # Eval Scenarios
 
-> 5 条真实任务场景，作为 dev-harness 改动（特别是 ABC 三件事）的**回归基线**。
+> **10 条真实任务场景**（目标 20），作为 dev-harness 改动（特别是 ABC 三件事）的**回归基线**。
 > 跑前后的 pass_rate / token / time 对比，能客观回答"改动是变好还是变差"。
+> 006-010 直接从 v3.4.x CHANGELOG 已修复 issue 反向沉淀，剩余 10 个见末尾 TODO。
 
 ## 与 trace-schema 的关系
 
@@ -49,11 +50,34 @@
 | 003 | 写一条 SKILL.md ≤ 200 行的校验脚本 | medium | architect 视角（哲学红线） + generic-test |
 | 004 | 修 Windows 下中文输出 GBK 编码问题 | small-medium | code-reviewer 视角 + cross-vendor 是否能找出 |
 | 005 | 实现 `scripts/scaffold.sh --skeleton` 命令 | large | 完整 pipeline + C 阶段产物（project-skeleton 骨架） |
+| 006 | 把 stop-hook RATE_LIMIT_KEYWORDS 换成严格 regex | small | C-lite + 误报修复（v3.4.4 HIGH-A） |
+| 007 | web_hud.py SSE 加 1h 超时 + 15s 心跳 | medium | C + 资源泄漏修复（v3.4.4 MEDIUM-A） |
+| 008 | pitfall `_next_id_for_date` 全文→tail 64KB 扫描 | small | C-lite + 性能 5000 条 ≤ 10ms（v3.4.4 MEDIUM-B） |
+| 009 | v4.0 Gate Feedback Loop 闭环 | medium | C + 跨 3 文件 + 闭环验证（v3.4.3） |
+| 010 | /dev 启动声明强制（防摆烂） | small | C-lite + SKILL.md 改写（v3.4.2） |
 
 **为什么用 dev-harness 自身的任务**：
 - 我们最了解领域，能精准评判产出质量
 - 改完直接验证（不需要外部环境）
-- 任务难度递增，能 cover 5 条路线中 3 条
+- 任务难度递增，能 cover 5 条路线中 4 条（B/A/C/C-lite）
+- **006-010 直接从 v3.4.x CHANGELOG 已修复 issue 反向沉淀**——"做过的事自然成 baseline"
+
+## TODO — 通往 20 scenario（剩 10）
+
+按 [external-references-2026-05.md §四](../../docs/external-references-2026-05.md) P1.1 目标 "5 → 20"，已补 006-010。下批候选（按优先级，全部源自 CHANGELOG 真实修复）：
+
+| 候选 ID | 任务 | 来源 |
+|--------|------|------|
+| 011 | TOCTOU race 修复（worker_status 单锁内 read+check+write） | v3.4.4 HIGH-C |
+| 012 | RETRY 语义重置 phase.error_count + gates（防 RETRY 假性失败） | v3.4.4 HIGH-B |
+| 013 | activity-watcher SENSITIVE_PATTERN 扩 10 敏感词（GitHub PAT/sk-/jwt 等） | v3.4.4 MEDIUM-E |
+| 014 | hook_trace breadcrumb 加 PID 防并发覆盖 | v3.4.4 MEDIUM-C |
+| 015 | Plan fallback 二态实现（wait/auto-approve/skip） | v3.4.2 |
+| 016 | Stop-hook 软提醒分级（advisory → hard，stage 切换重置） | v3.4.2 |
+| 017 | cross-vendor review — detect-codex 自动 enable + 投票汇总 | v3.4.1 |
+| 018 | Pitfall candidate → rule 人工 promote 流程 | v3.4.1 |
+| 019 | depends_on DAG 拓扑校验 + 环检测 | v3.4.0 |
+| 020 | filelock 缺失检测（Orchestrator 启动前 fail-fast） | v3.4.0 |
 
 ## 跑回归
 

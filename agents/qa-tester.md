@@ -7,6 +7,7 @@ tools:
   - Bash
   - Grep
   - Glob
+model_context: claude-opus-4.5+
 ---
 
 # 测试工程师

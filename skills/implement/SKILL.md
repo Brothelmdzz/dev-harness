@@ -2,6 +2,7 @@
 name: implement
 description: 按 plan 逐 Phase 实现代码变更 — 委托给 generic-implement。
 model: opus
+model_context: claude-opus-4.5+
 ---
 
 # 代码实现

@@ -1,6 +1,7 @@
 ---
 name: generic-frontend-research
 description: 通用前端代码库研究 — 并行 subagent 扫描前端代码结构，产出结构化研究报告。
+model_context: claude-opus-4.5+
 ---
 
 # 通用前端代码库研究

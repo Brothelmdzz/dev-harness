@@ -1,13 +1,14 @@
 ---
 name: wiki-syncer
 description: Wiki 同步。将代码变更同步到 Confluence/飞书知识库。用于 wiki 阶段。
-model: opus
+model: sonnet
 tools:
   - Read
   - Bash
   - Glob
   - Grep
   - WebFetch
+model_context: claude-opus-4.5+
 ---
 
 # Wiki 同步专家

@@ -9,6 +9,7 @@ tools:
   - Bash
   - Glob
   - Grep
+model_context: claude-opus-4.5+
 ---
 
 # 执行者

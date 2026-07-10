@@ -1,6 +1,7 @@
 ---
 name: generic-docs
 description: 通用文档更新 — 扫描代码变更自动更新 README 和 API 文档。
+model_context: claude-opus-4.5+
 ---
 
 # 通用文档更新

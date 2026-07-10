@@ -7,6 +7,7 @@ tools:
   - Grep
   - Glob
   - WebFetch
+model_context: claude-opus-4.5+
 ---
 
 # 规划师

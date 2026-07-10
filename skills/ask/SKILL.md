@@ -1,6 +1,7 @@
 ---
 name: ask
 description: 纯对话问答模式 — 不创建 harness 状态，不触发 stop-hook。Use when: 用户说"问一下/ask/聊聊"。
+model_context: claude-opus-4.5+
 ---
 
 # /ask — 对话模式

@@ -2,6 +2,7 @@
 name: validate
 description: 通用计划验证。逐项对比代码变更与计划文档，生成验证报告。Use when: 用户说"验证计划/validate/检查实现"。
 model: sonnet
+model_context: claude-opus-4.5+
 ---
 
 # 计划验证

@@ -1,6 +1,7 @@
 ---
 name: generic-frontend-implement
 description: 通用前端实现 — 检测前端技术栈，按 plan 逐 Phase 实现组件/页面/路由变更，自动门禁验证。
+model_context: claude-opus-4.5+
 ---
 
 # 通用前端实现

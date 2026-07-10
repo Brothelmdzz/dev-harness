@@ -2,6 +2,7 @@
 name: audit-skill
 description: 单独执行代码审计。Use when: 用户说"审计/audit/检查代码质量"。
 model: opus
+model_context: claude-opus-4.5+
 ---
 
 # /audit — 代码审计

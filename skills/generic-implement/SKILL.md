@@ -1,6 +1,7 @@
 ---
 name: generic-implement
 description: 通用计划执行 — 按 plan 文档逐 Phase 实现代码变更，自动门禁验证。
+model_context: claude-opus-4.5+
 ---
 
 # 通用计划执行

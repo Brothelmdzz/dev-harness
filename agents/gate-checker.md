@@ -1,11 +1,12 @@
 ---
 name: gate-checker
 description: 门禁验证。自动检测技术栈并运行构建和测试命令，返回通过/失败结果。用于 implement 阶段每个 Phase 完成后。
-model: opus
+model: sonnet
 tools:
   - Read
   - Bash
   - Glob
+model_context: claude-opus-4.5+
 ---
 
 # 门禁检查员

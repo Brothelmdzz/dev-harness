@@ -2,6 +2,7 @@
 name: prd
 description: 通用需求对齐。多轮对话与用户澄清功能细节，产出结构化 PRD。Use when: 用户说"写需求/PRD/对齐需求"。
 model: opus
+model_context: claude-opus-4.5+
 ---
 
 # 需求文档 (PRD) 创建

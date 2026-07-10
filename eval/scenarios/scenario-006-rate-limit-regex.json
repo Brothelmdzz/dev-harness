@@ -1,0 +1,40 @@
+{
+  "task_id": "scenario-006-rate-limit-regex",
+  "task_source": "real-task",
+  "title": "把 stop-hook.py 的 RATE_LIMIT_KEYWORDS 子串列表换成严格 regex",
+  "description": "stop-hook.py 当前用 RATE_LIMIT_KEYWORDS 列表（含裸 'resets' / 'rate limit'）做子串匹配检测限流，但用户讨论『如何实现 rate limiting』、『session resets every hour』等任何含此子串的话题都会误触发暂停 15 分钟。把它改为严格 regex RATE_LIMIT_RE：必须匹配 (1) 强动词 hit/exceeded/reached/encountered/exhausted + (rate-)limit，或 (2) 'rate-limit exceeded/hit/reached' 主被动语态，或 (3) HTTP 429 + too many requests，或 (4) 'limit resets at/in' 平台告知短语。需要 5 真信号 case + 5 讨论场景 case 的回归测试，全部正确分类。",
+  "complexity": "small",
+  "expected_route": "C-lite",
+  "expected_skills": ["generic-implement", "generic-test"],
+  "expected_files_changed": [
+    "hooks/stop-hook.py"
+  ],
+  "reference_impl": {
+    "similar_files": [
+      "hooks/stop-hook.py"
+    ],
+    "related_rules": [
+      "templates/project-skeleton/.claude/rules/safety.md"
+    ]
+  },
+  "verification": {
+    "command": "python -c \"import re, sys; sys.path.insert(0, 'hooks'); from importlib import import_module; m = import_module('stop-hook'); rl = getattr(m, 'RATE_LIMIT_RE', None); assert rl is not None, 'RATE_LIMIT_RE missing'; assert rl.search('rate limit exceeded'); assert rl.search('HTTP 429 too many requests'); assert not rl.search('how to implement rate limiting'); assert not rl.search('session resets every hour'); print('OK')\"",
+    "success_criteria": "RATE_LIMIT_RE 在 5 真信号匹配且在 5 讨论场景不匹配"
+  },
+  "rubric": {
+    "must_pass": [
+      "RATE_LIMIT_RE 是正则对象（不再是字符串列表）",
+      "匹配 5 真信号：'rate limit exceeded' / 'rate-limit hit' / '429 too many requests' / 'limit resets at 9:50pm' / 'rate limit exhausted'",
+      "不匹配 5 讨论场景：'how to implement rate limiting' / 'session resets every hour' / 'we should add rate limits' / 'discuss rate limit strategy' / 'session timeout'"
+    ],
+    "should_pass": [
+      "保留旧 RATE_LIMIT_KEYWORDS 作为字符串注释或常量便于审计",
+      "regex 用 re.compile 编译一次（避免每次调用重编）",
+      "调用点（is_rate_limited / similar function）保留同一入口名向后兼容"
+    ],
+    "nice_to_have": [
+      "添加 pytest 回归用例（即使项目无 pytest 也可在 hooks 目录写独立 self-test）",
+      "regex 使用 verbose 模式（re.X）+ 行内注释提高可读性"
+    ]
+  }
+}

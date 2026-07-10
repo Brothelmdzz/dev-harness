@@ -2,6 +2,7 @@
 name: test-skill
 description: 单独执行测试 — 自动检测测试框架并运行。Use when: 用户说"跑测试/test/run tests"。
 model: opus
+model_context: claude-opus-4.5+
 ---
 
 # /test — 执行测试

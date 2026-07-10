@@ -2,6 +2,7 @@
 name: plan
 description: 通用实现计划创建。交互式设计分阶段技术方案。Use when: 用户说"创建计划/plan/设计方案"。
 model: opus
+model_context: claude-opus-4.5+
 ---
 
 # 实现计划创建

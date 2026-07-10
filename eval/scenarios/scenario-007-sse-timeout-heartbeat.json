@@ -1,0 +1,38 @@
+{
+  "task_id": "scenario-007-sse-timeout-heartbeat",
+  "task_source": "real-task",
+  "title": "给 web_hud.py 的 SSE 加 1 小时强制断开 + 15 秒心跳",
+  "description": "web_hud.py 当前 SSE 无超时退出：客户端不主动断开（如 Chrome 后台标签 / 进程残留）时 SSE 线程永久占用资源。修复：(1) 单个 SSE 连接 1 小时强制断开（避免无限挂着）(2) 每 15 秒发一个 SSE comment 心跳（: heartbeat\\n\\n）探测客户端 — dead conn 会抛 BrokenPipeError 让 server 主动退出。浏览器 EventSource 默认自动重连，断开后无感。",
+  "complexity": "medium",
+  "expected_route": "C",
+  "expected_skills": ["generic-implement", "generic-test"],
+  "expected_files_changed": [
+    "scripts/web_hud.py"
+  ],
+  "reference_impl": {
+    "similar_files": [
+      "scripts/web_hud.py"
+    ],
+    "related_rules": []
+  },
+  "verification": {
+    "command": "grep -E 'time\\.time\\(\\)|started_at|heartbeat|BrokenPipe' scripts/web_hud.py | head -10",
+    "success_criteria": "SSE handler 含连接开始时间戳 + 心跳关键字 + BrokenPipe 处理"
+  },
+  "rubric": {
+    "must_pass": [
+      "SSE 连接 ≥ 1 小时自动断开",
+      "每 15 秒发送 SSE comment 心跳",
+      "BrokenPipeError 主动退出循环（不抛栈、不阻塞主线程）"
+    ],
+    "should_pass": [
+      "超时和心跳间隔通过常量定义（如 SSE_MAX_DURATION = 3600 / SSE_HEARTBEAT_SEC = 15）",
+      "断开时打印日志（含连接持续时间 + 原因）",
+      "保留浏览器 EventSource 自动重连兼容（断开 → 客户端会重新 GET）"
+    ],
+    "nice_to_have": [
+      "支持 dev-config.yml 覆盖超时/心跳参数（与防线 6 参数化保持一致）",
+      "记录到 .claude/harness-eval.jsonl 便于追踪 SSE 健康度"
+    ]
+  }
+}

@@ -2,6 +2,7 @@
 name: remember
 description: 通用记忆保存。提炼当前对话的关键信息，保存为可搜索的语义记忆。Use when: 用户说"收工/remember/保存进度"或完成重要任务时。
 model: sonnet
+model_context: claude-opus-4.5+
 ---
 
 # 记忆保存

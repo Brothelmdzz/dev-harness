@@ -199,7 +199,7 @@
 | 5 | 任何 hook 必须有超时 + 降级路径 | `hooks.json` schema 校验 |
 | 6 | Code Review 必须 ≥2 路异构模型 | `generic-review` 内 assert |
 | 7 | 任何变更必须有可回滚边界 | ChangeSet 字段校验（v4 引入） |
-| 8 | pipeline 的 stage 数量 ≤ 7 | `pipeline.yml` schema |
+| 8 | pipeline 的**逻辑** stage 数量 ≤ 7（同一 `parallel_group` 视为单一逻辑 stage） | `dh-lint.py --check=red-line-8` |
 | 9 | SKILL/Agent prompt 中禁止依赖外部 URL（除非缓存到仓库） | grep 校验 |
 
 ---

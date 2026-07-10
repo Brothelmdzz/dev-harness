@@ -8,6 +8,7 @@ tools:
   - Glob
   - WebFetch
   - WebSearch
+model_context: claude-opus-4.5+
 ---
 
 # 架构师

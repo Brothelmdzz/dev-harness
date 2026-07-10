@@ -6,6 +6,7 @@ tools:
   - Read
   - Grep
   - Glob
+model_context: claude-opus-4.5+
 ---
 
 <!--

@@ -1,6 +1,7 @@
 ---
 name: generic-audit
 description: 通用代码审计 — 自动对比 plan/PRD 与实际代码实现，检查质量、安全、一致性。适用于任何语言和框架。
+model_context: claude-opus-4.5+
 ---
 
 # 通用代码审计

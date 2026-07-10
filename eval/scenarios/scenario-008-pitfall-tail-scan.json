@@ -1,0 +1,39 @@
+{
+  "task_id": "scenario-008-pitfall-tail-scan",
+  "task_source": "real-task",
+  "title": "把 pitfall._next_id_for_date 从全文扫描改成 tail 64KB 扫描",
+  "description": "scripts/lib/pitfall.py 的 _next_id_for_date 当前每次写入都全文扫描整个 jsonl 找当日最大 id，长期累积 5000+ 条 pitfall 后性能下降到 ~50ms/次。同时 `target in line` 子串匹配会被 root_cause 字段里引用历史 PIT-ID 干扰（false positive）。修复：(1) 只读文件末尾 64KB（用 file.seek(-65536, 2)，从末尾偏移）(2) 用正则精确匹配 \"id\": \"PIT-YYYYMMDD-NN\" 字段位置（不是子串）。性能目标：5000 条 ≤ 10ms。",
+  "complexity": "small",
+  "expected_route": "C-lite",
+  "expected_skills": ["generic-implement", "generic-test"],
+  "expected_files_changed": [
+    "scripts/lib/pitfall.py"
+  ],
+  "reference_impl": {
+    "similar_files": [
+      "scripts/lib/pitfall.py",
+      "scripts/lib/state.py"
+    ],
+    "related_rules": []
+  },
+  "verification": {
+    "command": "python -c \"import re, time, tempfile, os, sys; sys.path.insert(0, 'scripts'); from lib.pitfall import _next_id_for_date; tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False); date = '20260520'; [tmp.write(f'{{\\\"id\\\": \\\"PIT-{date}-{i:03d}\\\"}}\\\\n') for i in range(5000)]; tmp.close(); start = time.perf_counter(); next_id = _next_id_for_date(tmp.name, date); elapsed_ms = (time.perf_counter() - start) * 1000; os.unlink(tmp.name); print(f'next_id={next_id} elapsed_ms={elapsed_ms:.2f}'); assert next_id == 'PIT-20260520-5000', f'wrong next_id: {next_id}'; assert elapsed_ms < 50, f'too slow: {elapsed_ms:.2f}ms'\"",
+    "success_criteria": "5000 条 jsonl 算下一个 id ≤ 50ms（目标 10ms，留 5x buffer）+ next_id 正确递增"
+  },
+  "rubric": {
+    "must_pass": [
+      "性能：5000 条 ≤ 50ms（目标 10ms）",
+      "正确性：next_id 严格递增 PIT-YYYYMMDD-NN",
+      "不再被 root_cause 字段引用历史 ID 干扰（用 \"id\" 字段精确匹配）"
+    ],
+    "should_pass": [
+      "用常量定义 tail 大小（如 TAIL_SCAN_BYTES = 64 * 1024）",
+      "文件 < tail 大小时 fallback 到全文扫描（兼容小文件）",
+      "保留旧 API 签名不破坏调用方"
+    ],
+    "nice_to_have": [
+      "加 pytest 基准测试断言性能不退化（regression guard）",
+      "考虑跨日期边界（连续两天，22 点写入和 02 点写入），tail 是否会漏 id"
+    ]
+  }
+}
