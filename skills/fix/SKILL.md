@@ -1,6 +1,6 @@
 ---
 name: fix
-description: 快速修复 — 单 Skill 模式，只跑 implement + test。Use when: 用户说"修一下/fix/快速修复"。
+description: "Fast single-pass bug fix: implement plus test only, no research or plan. Use when the user says fix, 修一下, 快速修复, or wants one small defect fixed and verified. Do not use for multi-phase features (dev-pipeline)."
 model: opus
 model_context: claude-opus-4.5+
 ---

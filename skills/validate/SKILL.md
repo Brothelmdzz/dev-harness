@@ -1,6 +1,6 @@
 ---
 name: validate
-description: 通用计划验证。逐项对比代码变更与计划文档，生成验证报告。Use when: 用户说"验证计划/validate/检查实现"。
+description: Plan-conformance validation comparing each planned change to the code and running the plan verification commands. Use when the user says validate, 验证计划, 检查实现, or phases are done and need regression. Do not use for code review (run-review).
 model: sonnet
 model_context: claude-opus-4.5+
 ---

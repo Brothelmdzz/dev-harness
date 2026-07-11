@@ -4,28 +4,23 @@
 skill_aliases:
   research:
     - research_codebase
-    - research
     - generic-research
 
   prd:
     - create_prd
     - prd
-    - generic-prd
 
   plan:
     - create_plan
     - plan
-    - generic-plan
 
   implement:
     - implement_plan
-    - implement
     - generic-implement
 
   validate:
     - validate_plan
     - validate
-    - generic-validate
 
   audit:
     - audit-logic
@@ -52,7 +47,6 @@ skill_aliases:
 
   remember:
     - remember
-    - generic-remember
 
 # v3.3 新增: 轻量入口 Skill
 # 这些是单 Skill 模式的入口，不走完整 pipeline

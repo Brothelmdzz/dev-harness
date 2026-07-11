@@ -1,6 +1,6 @@
 ---
 name: generic-frontend-research
-description: 通用前端代码库研究 — 并行 subagent 扫描前端代码结构，产出结构化研究报告。
+description: Frontend codebase research scanning component/route/state structure into a report. Use when researching a frontend-only codebase or the frontend profile enters research. Do not use for backend/full-repo research (generic-research).
 model_context: claude-opus-4.5+
 ---
 

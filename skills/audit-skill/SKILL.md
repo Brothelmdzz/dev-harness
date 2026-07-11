@@ -1,6 +1,6 @@
 ---
-name: audit-skill
-description: 单独执行代码审计。Use when: 用户说"审计/audit/检查代码质量"。
+name: run-audit
+description: Standalone spec-vs-code audit against plan/PRD for quality and consistency. Use when the user says audit, 审计, 检查代码质量 outside a pipeline. Do not use for code review (run-review).
 model: opus
 model_context: claude-opus-4.5+
 ---

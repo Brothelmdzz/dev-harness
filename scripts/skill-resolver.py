@@ -18,18 +18,20 @@ from pathlib import Path
 
 # ==================== 别名映射 ====================
 
+# v4.5: 移除已删除的重定向壳别名（research/implement）与从未存在的 generic-* 死条目。
+# 注意: 本 dict 与 defaults/skill-map.yml 是历史遗留的双源，修改时必须两边同步（待合一）。
 SKILL_ALIASES = {
-    "research":  ["research_codebase", "research", "generic-research"],
-    "prd":       ["create_prd", "prd", "generic-prd"],
-    "plan":      ["create_plan", "plan", "generic-plan"],
-    "implement": ["implement_plan", "implement", "generic-implement"],
-    "validate":  ["validate_plan", "validate", "generic-validate"],
+    "research":  ["research_codebase", "generic-research"],
+    "prd":       ["create_prd", "prd"],
+    "plan":      ["create_plan", "plan"],
+    "implement": ["implement_plan", "generic-implement"],
+    "validate":  ["validate_plan", "validate"],
     "audit":     ["audit-logic", "audit", "generic-audit"],
     "test":      ["test-apis", "test", "generic-test"],
     "docs":      ["update-api-docs", "docs", "generic-docs"],
     "review":    ["generic-review", "review"],
     "wiki":      ["generic-wiki", "wiki"],
-    "remember":  ["remember", "generic-remember"],
+    "remember":  ["remember"],
 }
 
 # 角色 Profile → 额外别名前缀

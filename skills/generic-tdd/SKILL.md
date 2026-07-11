@@ -1,6 +1,6 @@
 ---
 name: generic-tdd
-description: TDD 模式实现 — RED-GREEN-REFACTOR 循环，先写测试再写代码。与 implement 阶段集成，强制测试优先。
+description: "Test-first implementation driving RED-GREEN-REFACTOR: failing test before code. Use when a feature or bugfix must be built test-first or the plan mandates TDD. Do not use for running an existing suite (generic-test)."
 model_context: claude-opus-4.5+
 ---
 

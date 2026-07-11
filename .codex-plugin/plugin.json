@@ -1,0 +1,33 @@
+{
+  "name": "dev-harness",
+  "version": "3.4.4",
+  "description": "Dev Harness - 自驱动开发流水线 | 命令: /dev (全流程) /fix (快速修复) /test (运行测试) /audit (代码审计) /review (代码审查) /ask (对话问答) | 特性: 三层 Skill 解析 + 多模式(pipeline/single/conversation) + Web HUD 实时面板 + 12 专用 Agent",
+  "author": {
+    "name": "brothelmdzz"
+  },
+  "license": "MIT",
+  "homepage": "https://github.com/brothelmdzz/dev-harness",
+  "keywords": [
+    "dev-pipeline",
+    "harness",
+    "multi-agent",
+    "auto-loop",
+    "web-hud"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Dev Harness",
+    "shortDescription": "Self-driving dev pipeline with gates and auto-resume",
+    "longDescription": "Runs a full research-plan-implement-audit-test-review pipeline automatically, with build/test gates at every phase and a Stop hook that resumes the run until the pipeline is actually done. Use Dev Harness for large or multi-step features that benefit from disciplined, unattended execution.",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Run the full dev pipeline on this feature",
+      "Fix the current bug and verify the fix",
+      "Run a multi-agent code review on this branch"
+    ]
+  }
+}

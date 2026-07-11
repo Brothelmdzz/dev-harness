@@ -10,7 +10,7 @@ Dev Harness Stop Hook — 阻止 Claude 在 Pipeline 未完成时停下
 
 v3.0 改进:
   - 防线 1: Rate Limit 自动检测 → 暂停并记录恢复时间
-  - 防线 2: 上下文使用率 > 80% → 转入 remember 阶段
+  - （原防线 2 上下文使用率检测已于 v4.5 删除：context_window 字段不在两平台 Stop schema 内）
   - 防线 3: 单阶段超时 (默认 30min)
   - 防线 4: 总运行时长上限 (默认 2h)
   - 防线 5: 滑动窗口频率限制 (5min 内 > 10 次 → 死循环)
@@ -26,6 +26,15 @@ v3.4.2 改进（Nudge 软提醒层）:
 import json, sys
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
+
+# Windows GBK 控制台防御：block reason 摘要含 U+2192(→) 等非 ASCII 字符，
+# 若 stdout 仍是 GBK 编码，print(json.dumps(..., ensure_ascii=False)) 会 UnicodeEncodeError
+# → hook 崩溃 → 不输出 decision → pipeline 断裂。强制 UTF-8（CLAUDE.md Windows 编码铁律）。
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 
 # 让 hooks 能 import scripts/lib/
 _plugin_root = Path(__file__).resolve().parent.parent
@@ -284,7 +293,7 @@ def _build_context_summary(state, project_root):
         result += pitfall_ctx
 
     # v3.4.4 MEDIUM-2 fix：总长度上限。phases 多/pitfall 累计时 reason 可能 ~3000+ 字符，
-    # 每次续跑都吃 Claude 几千 tokens 上下文预算，反而让防线 1 context_overflow 提前触发。
+    # 每次续跑都吃 Claude 几千 tokens 上下文预算，无谓加速上下文膨胀。
     # 2000 字符约 500-800 tokens（中英文混合），是续跑摘要的合理上限。
     MAX_REASON_CTX = 2000
     if len(result) > MAX_REASON_CTX:
@@ -331,24 +340,11 @@ def output_continue():
     """允许停止（不阻拦），学习 OMC 的 {continue: true} 模式"""
     print(json.dumps({"continue": True, "suppressOutput": True}))
 
-def is_context_limit_stop(hook_input):
-    """
-    检测是否因上下文满而停止。
-    阻止 context-limit 停止会导致死锁：无法 compact 因为无法停止，无法继续因为上下文满。
-    学习自 OMC issue #213。
-    """
-    for key in ["stop_reason", "stopReason", "end_turn_reason", "endTurnReason", "reason"]:
-        reason = str(hook_input.get(key, "")).lower()
-        if any(p in reason for p in ["context", "token limit", "max_tokens", "context_length", "too long"]):
-            return True
-    return False
-
-def is_user_abort(hook_input):
-    """检测用户主动中断（Ctrl+C / cancel）"""
-    if hook_input.get("user_requested") or hook_input.get("userRequested"):
-        return True
-    reason = str(hook_input.get("stop_reason", hook_input.get("stopReason", ""))).lower()
-    return reason in ("aborted", "abort", "cancel", "interrupt")
+# is_context_limit_stop() 与 is_user_abort() 已删除（v4.5）：
+# 二者读取的 stop_reason / end_turn_reason / user_requested 等字段均不在 CC / Codex
+# 两平台 Stop payload schema 内（2026-07 官方文档核验），恒返回 False → 恒不放行，
+# 是字段名臆测出的死代码。上下文满/用户中断改由平台原生行为处理（auto-compact / Ctrl+C），
+# 删除后控制流与现状完全等价。
 
 def main():
     # ==================== 读取 hook 输入 ====================
@@ -363,16 +359,8 @@ def main():
     # Claude Code 传入 cwd 字段，比 find_project_root() 更可靠
     hook_cwd = hook_input.get("cwd") or hook_input.get("directory") or ""
 
-    # ==================== 必须放行的停止类型 ====================
-    # 上下文满 → 必须放行，否则死锁（无法 compact）
-    if is_context_limit_stop(hook_input):
-        output_continue()
-        sys.exit(0)
-
-    # 用户主动中断 → 尊重用户意愿
-    if is_user_abort(hook_input):
-        output_continue()
-        sys.exit(0)
+    # 上下文满/用户中断的放行分支已删除（v4.5）：所依赖字段不在两平台 Stop schema 内，
+    # 恒不触发。上下文管理下沉给平台 auto-compact，用户中断由平台原生 Ctrl+C 处理。
 
     # ==================== 读取 harness 状态 ====================
     if hook_cwd:
@@ -442,26 +430,16 @@ def main():
                    state.get("metrics", {}).get("max_retries", 3))
     lim = _get_limits(state)
 
-    # ==================== 防线优先级（C3: 从互斥改为有序聚合） ====================
-    # 优先级: context_overflow > rate_limit > 超时/频率
-    # context_overflow 必须最先检查——上下文满时必须放行让 compact，其他防线都无意义
-
-    # ==================== 防线 1: 上下文使用率（最高优先级） ====================
-    ctx = hook_input.get("context_window", {})
-    ctx_used = ctx.get("used", 0)
-    ctx_total = ctx.get("total", 1)
-    ctx_pct = (ctx_used / ctx_total * 100) if ctx_total > 0 else 0
-    if ctx_pct > lim["context_overflow_pct"]:
-        for s in pipeline:
-            if s["name"] == "remember":
-                s["status"] = "PENDING"
-        save_state(state, state_file)
-        log_eval(project_root, state, "context_overflow", f"ctx={ctx_pct:.0f}%，放行让 compact")
-        output_continue()
-        sys.exit(0)
+    # ==================== 防线优先级 ====================
+    # 优先级: rate_limit > 超时/频率
+    # 原防线①（上下文使用率）已删除（v4.5）：读取的 context_window 字段两平台 Stop payload
+    # 均无（2026-07 官方文档核验），ctx_pct 恒为 0 → 分支恒不触发，是死代码。上下文管理下沉
+    # 给平台 auto-compact；需要溢出后动作应改挂 PreCompact 事件，而非在 Stop payload 里猜字段。
 
     # ==================== 防线 2: Rate Limit 检测 ====================
-    last_msg = hook_input.get("last_assistant_message", "")
+    # Codex 侧 last_assistant_message 可为 null；.get(k, "") 对 null 返回 None，
+    # 会让 RATE_LIMIT_RE.search(None) 抛 TypeError → hook 崩溃。用 `or ""` 兜底。
+    last_msg = hook_input.get("last_assistant_message") or ""
     if RATE_LIMIT_RE.search(last_msg):
         state["paused"] = True
         state["pause_reason"] = "rate_limit"

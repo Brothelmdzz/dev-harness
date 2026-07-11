@@ -1,6 +1,6 @@
 ---
-name: dev
-description: 开发流水线编排器 — 自动检测状态、三层 Skill 解析、Hook 驱动续跑。通用于任何项目。Use when: 用户说"dev/开发/继续开发/下一步"，或新会话需要续接上次进度。
+name: dev-pipeline
+description: Full-auto multi-stage dev pipeline orchestrator with build/test gate enforcement and hook-driven auto-resume. Use when the user says /dev, 开发, 继续开发, 下一步, when a new session must resume an in-progress harness task, or when the user sets a goal that references the dev pipeline / dev-harness. Do not use for one-off fixes (fix), Q&A (ask), or one stage alone (*-skill).
 model_context: claude-opus-4.5+
 ---
 

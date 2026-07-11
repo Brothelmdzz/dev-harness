@@ -1,6 +1,6 @@
 ---
-name: review-skill
-description: 单独执行代码审查（三路并行）。Use when: 用户说"审查/review/code review"。
+name: run-review
+description: Standalone multi-reviewer code review (parallel code, security, architecture). Use when the user says review, 审查, code review outside a pipeline. Do not use for plan-conformance audit (run-audit).
 model: opus
 model_context: claude-opus-4.5+
 ---

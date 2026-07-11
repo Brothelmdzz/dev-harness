@@ -13,7 +13,7 @@
           {
             "type": "command",
             "command": "python -c \"import os,sys,subprocess,pathlib;r=os.environ.get('CLAUDE_PLUGIN_ROOT') or os.environ.get('CURSOR_PLUGIN_ROOT');sys.exit(0) if not r else None;root=pathlib.Path(r);venv=root/'.venv'/('Scripts/python.exe' if os.name=='nt' else 'bin/python');py=str(venv) if venv.exists() else sys.executable;hook=root/'hooks'/'session-init.py';subprocess.run([py,str(hook)]) if hook.exists() else None\"",
-            "timeout": 3000
+            "timeout": 10
           }
         ]
       }
@@ -25,7 +25,18 @@
           {
             "type": "command",
             "command": "python -c \"import os,sys,subprocess,pathlib;r=os.environ.get('CLAUDE_PLUGIN_ROOT') or os.environ.get('CURSOR_PLUGIN_ROOT');sys.exit(0) if not r else None;root=pathlib.Path(r);venv=root/'.venv'/('Scripts/python.exe' if os.name=='nt' else 'bin/python');py=str(venv) if venv.exists() else sys.executable;hook=root/'hooks'/'stop-hook.py';subprocess.run([py,str(hook)],input=sys.stdin.buffer.read() if not sys.stdin.isatty() else None) if hook.exists() else None\"",
-            "timeout": 5000
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "prompt",
+            "model": "haiku",
+            "timeout": 60,
+            "prompt": "You are the completion judge for the dev-harness development pipeline, running as a Stop hook after every turn. The Stop event payload is: $ARGUMENTS\n\nJudge ONLY from what Claude has surfaced in the conversation. The pipeline reports its state by running `python harness.py hud`, whose table output appears as a Bash tool result in the conversation.\n\nApply these rules in order and stop at the first that matches:\n1. If the conversation shows NO sign of a dev-harness pipeline (no harness.py calls and no hud output at all), reply {\"decision\":\"allow\"} - never interfere with an ordinary session.\n2. If the most recent hud output shows any stage in an escalated or blocked state, reply {\"decision\":\"allow\"} - hand control back to the deterministic command Stop hook's escalation logic to prevent livelock.\n3. Treat the goal as MET only when the most recent `python harness.py hud` output reports EVERY stage = DONE and EVERY gate = pass (build/test/lint green, error_count = 0). If met, reply {\"decision\":\"allow\"}.\n4. Otherwise the pipeline is active but not proven complete: reply {\"decision\":\"block\",\"reason\":\"<one line naming the stage or gate still not DONE/pass>\"}.\n\nNEVER infer completion from prose claims such as \"done\", \"完成了\", or \"all set\" - only the literal hud table counts as evidence. If harness.py was called but no hud output is present, treat as NOT complete and block.\n\nReply with ONLY the JSON decision object and nothing else."
           }
         ]
       }
@@ -37,7 +48,7 @@
           {
             "type": "command",
             "command": "python -c \"import os,sys,subprocess,pathlib;r=os.environ.get('CLAUDE_PLUGIN_ROOT') or os.environ.get('CURSOR_PLUGIN_ROOT');sys.exit(0) if not r else None;root=pathlib.Path(r);venv=root/'.venv'/('Scripts/python.exe' if os.name=='nt' else 'bin/python');py=str(venv) if venv.exists() else sys.executable;hook=root/'hooks'/'plan-watcher.py';subprocess.run([py,str(hook)],input=sys.stdin.buffer.read() if not sys.stdin.isatty() else None) if hook.exists() else None\"",
-            "timeout": 3000
+            "timeout": 10
           }
         ]
       },
@@ -47,7 +58,17 @@
           {
             "type": "command",
             "command": "python -c \"import os,sys,subprocess,pathlib;r=os.environ.get('CLAUDE_PLUGIN_ROOT') or os.environ.get('CURSOR_PLUGIN_ROOT');sys.exit(0) if not r else None;root=pathlib.Path(r);venv=root/'.venv'/('Scripts/python.exe' if os.name=='nt' else 'bin/python');py=str(venv) if venv.exists() else sys.executable;hook=root/'hooks'/'activity-watcher.py';subprocess.run([py,str(hook)],input=sys.stdin.buffer.read() if not sys.stdin.isatty() else None) if hook.exists() else None\"",
-            "timeout": 3000
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import os,sys,subprocess,pathlib;r=os.environ.get('CLAUDE_PLUGIN_ROOT') or os.environ.get('CURSOR_PLUGIN_ROOT');sys.exit(0) if not r else None;root=pathlib.Path(r);venv=root/'.venv'/('Scripts/python.exe' if os.name=='nt' else 'bin/python');py=str(venv) if venv.exists() else sys.executable;hook=root/'hooks'/'hud-context.py';subprocess.run([py,str(hook)],input=sys.stdin.buffer.read() if not sys.stdin.isatty() else None) if hook.exists() else None\"",
+            "timeout": 10
           }
         ]
       }

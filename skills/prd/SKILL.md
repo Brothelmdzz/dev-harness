@@ -1,6 +1,6 @@
 ---
 name: prd
-description: 通用需求对齐。多轮对话与用户澄清功能细节，产出结构化 PRD。Use when: 用户说"写需求/PRD/对齐需求"。
+description: Requirement alignment via multi-round dialogue producing a structured what-not-how PRD. Use when the user says PRD, 写需求, 对齐需求. Do not use for technical plan design (plan) or product PRDs with user stories (generic-product-prd).
 model: opus
 model_context: claude-opus-4.5+
 ---

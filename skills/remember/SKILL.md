@@ -1,6 +1,6 @@
 ---
 name: remember
-description: 通用记忆保存。提炼当前对话的关键信息，保存为可搜索的语义记忆。Use when: 用户说"收工/remember/保存进度"或完成重要任务时。
+description: Memory capture distilling a session's key work, decisions, and lessons into searchable notes. Use when the user says remember, 收工, 保存进度, or a major task finishes. Do not use for project docs/README (generic-docs).
 model: sonnet
 model_context: claude-opus-4.5+
 ---

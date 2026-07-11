@@ -1,6 +1,6 @@
 ---
 name: generic-review
-description: 通用代码审查 — Claude 内部三路并行（code + security + arch）+ 可选第四路跨厂商对抗审查（codex cli），汇总对比。
+description: "Multi-reviewer code review: three parallel Claude reviewers plus an optional cross-vendor adversarial pass. Use when the pipeline enters the review stage or a diff needs review before merge. Do not use for plan-conformance audit (generic-audit)."
 model_context: claude-opus-4.5+
 ---
 

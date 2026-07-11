@@ -1,6 +1,6 @@
 ---
 name: generic-docs
-description: 通用文档更新 — 扫描代码变更自动更新 README 和 API 文档。
+description: Documentation sync scanning a diff and updating README and API docs. Use when the pipeline enters the docs stage after code lands. Do not use for team wiki sync (generic-wiki).
 model_context: claude-opus-4.5+
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: plan
-description: 通用实现计划创建。交互式设计分阶段技术方案。Use when: 用户说"创建计划/plan/设计方案"。
+description: Interactive phased implementation-plan design producing a plan doc with per-phase verification commands. Use when the user says plan, 创建计划, 设计方案, or research is done and a plan is needed. Do not use for requirement definition (prd) or execution (generic-implement).
 model: opus
 model_context: claude-opus-4.5+
 ---

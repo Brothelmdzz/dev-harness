@@ -1,6 +1,6 @@
 ---
-name: test-skill
-description: 单独执行测试 — 自动检测测试框架并运行。Use when: 用户说"跑测试/test/run tests"。
+name: run-tests
+description: "Standalone test runner: detect the framework (pytest/jest/gradle/cargo) and run the suite. Use when the user says test, 跑测试, run tests outside a pipeline. Do not use for writing tests first (generic-tdd)."
 model: opus
 model_context: claude-opus-4.5+
 ---

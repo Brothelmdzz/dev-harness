@@ -1,6 +1,6 @@
 ---
 name: generic-wiki
-description: Wiki 知识库自动同步 — 在代码变更交付后将功能说明、接口文档、架构变更同步到团队 Wiki（Confluence/飞书）。Use when: dev pipeline 的 wiki 阶段，或用户说"同步wiki/更新wiki/wiki sync"。
+description: Team knowledge-base sync pushing feature, API, and architecture changes to Confluence/飞书 wiki. Use when the pipeline enters the wiki stage or the user says 同步wiki, wiki sync. Do not use for in-repo docs (generic-docs).
 model_context: claude-opus-4.5+
 ---
 

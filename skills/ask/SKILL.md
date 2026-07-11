@@ -1,6 +1,6 @@
 ---
 name: ask
-description: 纯对话问答模式 — 不创建 harness 状态，不触发 stop-hook。Use when: 用户说"问一下/ask/聊聊"。
+description: Read-only Q&A that creates no harness state and arms no stop-hook. Use when the user says ask, 问一下, 聊聊, or wants an answer without starting a pipeline. Do not use when a file will change (fix, dev-pipeline).
 model_context: claude-opus-4.5+
 ---
 

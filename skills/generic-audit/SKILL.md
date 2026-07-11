@@ -1,6 +1,6 @@
 ---
 name: generic-audit
-description: 通用代码审计 — 自动对比 plan/PRD 与实际代码实现，检查质量、安全、一致性。适用于任何语言和框架。
+description: Spec-conformance audit comparing plan/PRD against the implementation for quality, security, consistency. Use when the pipeline enters the audit stage. Do not use for line-level code review (generic-review).
 model_context: claude-opus-4.5+
 ---
 

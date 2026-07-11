@@ -1,6 +1,6 @@
 ---
 name: generic-test
-description: 通用测试执行 — 自动检测项目测试框架，运行测试，验证功能正确性。支持 pytest/jest/gradle/cargo 等。
+description: Test-suite execution with automatic framework detection across pytest/jest/gradle/cargo. Use when the pipeline enters the test stage or a suite must be run. Do not use for test-first work (generic-tdd).
 model_context: claude-opus-4.5+
 ---
 
