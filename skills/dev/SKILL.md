@@ -10,7 +10,7 @@ model_context: claude-opus-4.5+
 
 收到 `/dev` 调用后，**第一条回复必须严格按以下格式开头**：
 
-> Using `dev-harness:dev` skill — running Step 0 (并行 3 条检测) now.
+> Using `dev-harness:dev-pipeline` skill — running Step 0 (并行 3 条检测) now.
 
 然后**在同一条回复内立即并行调用**下面"启动"段的 3 条 Bash 命令。
 
@@ -24,10 +24,24 @@ model_context: claude-opus-4.5+
 
 ## 约束
 
-- 每完成一个阶段/Phase，必须 `harness.py update` — 续跑的唯一依据
-- 不在阶段间停下等用户 — 更新状态后直接继续
 - Skill 解析走三层（L1 项目 > L2 用户 > L3 内置）
 - 同一 Phase/阶段失败 3 次必须停下报告用户
+
+## 连续执行（违纪红线）
+
+不在阶段间停下和用户 check-in。执行完 pipeline 全部阶段，唯一可停的三种情形：BLOCKED 且无法自解 / 真正阻断推进的歧义 / 全部阶段完成。"要我继续吗？"式提问和进度小结是在浪费用户时间——用户输入 `/dev` 就是让你跑完。
+
+| 借口 | 现实 |
+|------|------|
+| "阶段间同步下进度更稳妥" | update 状态已是唯一进度源，同步=停摆 |
+| "让用户确认下再进 implement" | 只有 `plan.fallback=wait` 才停；其余一律续跑 |
+| "这一步有点不确定，先问问" | 不确定≠阻断。记 pitfall、按最简可工作版本推进 |
+
+### 红旗（出现即代表你在摆烂）
+
+- 写了"已完成 X 阶段，是否继续" — 删掉，直接进下一阶段
+- 用自然语言复述"接下来我会…"代替真的调用 `harness.py update`
+- 违背话术字面 = 违背话术精神
 
 ## 脚本路径
 
@@ -71,7 +85,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts
 
 ## Pipeline 推进
 
-每个阶段：
+每个阶段按下面的循环走。`update` 之后**立即**跑一次 `hud`——hud 输出作为工具结果进 transcript，是完成裁判（prompt Stop hook）判定流水线是否真跑完的唯一证据；不跑 hud 裁判看不到任何状态。
 
 ```bash
 # 开始
@@ -81,9 +95,16 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts
 
 # 完成
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update <stage> DONE
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" hud
 
 # 直接继续下一个阶段，不停下
 ```
+
+### 每 stage 完成契约（必填，缺一不可）
+
+- [ ] 产出文件已落盘：`<path>`
+- [ ] 门禁结果：build=`<pass/fail>` test=`<pass/fail>`
+- [ ] 已执行 `harness.py update <stage> DONE` + `harness.py hud`  ← 未执行本行禁止进入下一 stage
 
 ---
 

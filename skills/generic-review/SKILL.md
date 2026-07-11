@@ -14,9 +14,35 @@ model_context: claude-opus-4.5+
 - CRITICAL 问题必须自动修复后重编译验证
 - 报告文件必须非空（>500 字节 + 至少 2 个 ## 标题），否则 stop-hook 会打回
 
+## 红线（违反即审错对象/审错模型）
+
+- **BASE 用 merge-base，绝不用 `HEAD~1`**：多 commit 任务用 `HEAD~1` 会被静默截断，只审最后一次提交。四路（三 Claude + codex）必须审同一个 range，range 由 Step 0 的 `$BASE` 唯一确定。
+- **三路必须按命名 agent 派发**（`code-reviewer` / `security-reviewer` / `architect`），不得退化成 `general-purpose`——命名 agent 的 frontmatter 已钉死模型（sonnet×2 + opus×1），退化成 general-purpose 会让 agent 继承会话最贵档模型，异构成本优势直接失效。
+
+## Step 0：记录 BASE + 生成 review package（一次，全 Layer 共用）
+
+审查前先算出 `$BASE` 并把完整 diff 写成**唯一命名文件**，后续四路都读这一个文件、审同一个 range——diff 永不粘进 controller 上下文。
+
+```bash
+mkdir -p .claude/reports
+
+# BASE 用 merge-base，绝不用 HEAD~1（多 commit 任务会被 HEAD~1 静默截断只审最后一次提交）
+BASE_BRANCH=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's|origin/||')
+BASE=$(git merge-base "${BASE_BRANCH:-master}" HEAD)
+echo "$BASE" > .claude/reports/review-base.txt   # 供 Layer 2 复用同一 range
+
+PKG=".claude/reports/review-package.md"
+{
+  echo "## commits"; git log --oneline "$BASE"..HEAD
+  echo;              echo "## stat"; git diff --stat "$BASE"..HEAD
+  echo;              echo "## diff"; git diff -U10   "$BASE"..HEAD
+} > "$PKG"
+echo "review package 已生成: $PKG (BASE=$BASE)"
+```
+
 ## Layer 1: Claude 内部三路并行（必跑）
 
-用 `Agent(run_in_background=true)` 同时启动：
+用 `Agent(run_in_background=true)` 同时启动。**三路都读取同一个 review package 文件路径 `.claude/reports/review-package.md`**（内含 commit 列表 + stat + 带 10 行上下文的完整 diff），不要把 diff 粘进各 agent 的 prompt。
 
 | Agent | 模型 | 侧重 | 产出 |
 |-------|------|------|------|
@@ -24,7 +50,7 @@ model_context: claude-opus-4.5+
 | security-reviewer | sonnet | SQL 注入、XSS、敏感信息泄露、权限缺失 | `.claude/reports/review-security.md` |
 | architect | opus | 架构合理性、模块边界、接口设计 | `.claude/reports/review-arch.md` |
 
-模型异构（sonnet × 2 + opus × 1）= 消除单模型偏见 + 成本反而比全 opus 低。
+模型异构（sonnet × 2 + opus × 1）= 消除单模型偏见 + 成本反而比全 opus 低。必须按上表的**命名 agent** 派发（见红线），不得退化成 general-purpose。
 
 每个问题标注 CRITICAL / WARN / INFO 级别。
 
@@ -52,15 +78,14 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/detect-codex.sh"
 ✅ 用 `codex exec --output-last-message`，直接把审查结论写入文件（实测干净 markdown）：
 
 ```bash
-# 在项目根执行
-BASE_BRANCH=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's|origin/||' || echo master)
-mkdir -p .claude/reports
+# 在项目根执行，复用 Step 0 落盘的 $BASE，保证四路审同一 range（绝不在此重算 BASE）
+BASE=$(cat .claude/reports/review-base.txt)
 
 codex exec \
   --skip-git-repo-check \
   --output-last-message .claude/reports/review-cross-vendor.md \
   -s read-only \
-  "请对 git diff ${BASE_BRANCH}...HEAD 做代码审查。
+  "请对 git diff ${BASE}...HEAD 做代码审查。
 
 ## 任务
 作为独立的非 Claude 模型，审查这次变更，找出：
