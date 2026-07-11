@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [4.5.0] — 2026-07-11
+
+> 三波交付：Wave 1（hooks 修复 + Codex 一等公民 + setup 体系）、Wave 2（技能正文深改：连续执行工具包 + 完成契约 + hud 主通道 + review-package 文件交接）、Wave 3（文档同步 + eval 门禁，本条目）。落地依据见 `docs/2026-07-11-v4.5-action-plan.md`。
+
+### Added
+
+- **Codex 一等公民**：新增 `.codex-plugin/plugin.json`（`interface` 块；故意不声明 `hooks` 字段，让 `hooks.json` 走约定发现自动生效）
+- **命令化七入口**：`commands/{dev,fix,ask,run-tests,run-audit,run-review,setup}.md`，薄壳委托对应 skill，不占 skills 隐式匹配预算
+- **`/dev-harness:setup` doctor**：新增 `scripts/setup_report.py`，13 项体检（python 可执行性 / venv 产物 / filelock / 必需文件完整性 / PLUGIN_ROOT / codex cli / claude 版本 / hook 是否被全局禁用 / codex goals 特性 / codex hook 信任 / codex 清单 / cursor 环境注入等）+ `--fix` 修复模式 + `--json` 结构化输出
+- **`/goal` 原生协同**：`hooks/hooks.json` 的 Stop 事件新增一个 `type:"prompt"`（haiku）完成裁判 hook，复刻 `/goal` 的语义判定——只读 transcript 里 `harness.py hud` 的表格输出判断流水线是否真正完成，与既有的 `stop-hook.py`（command 类型，确定性地板）并行触发；官方语义是 OR-block ⇒ AND-to-stop，任一 hook block 就续跑，全部 allow 才真停
+- `hooks/hud-context.py`：新建，PostToolUse 兜底把 hud 摘要通过 `additionalContext` 注入，防止 Claude 漏跑 hud 导致裁判读不到状态
+- **dev-pipeline 连续执行工具包**（`skills/dev/SKILL.md`）：借口/现实对照表 + 红旗清单、每 stage 完成契约（结构化必填槽，替换原先的 prose 提醒）
+- **generic-implement 同款续跑纪律**：Phase 版连续执行工具包 + Phase 完成契约，补上 `/fix` 单跑 `generic-implement` 时原本缺失的续跑纪律
+- **generic-review review-package 文件交接**：新增 Step 0，`git merge-base` 算出 `$BASE` 后把 `commits` / `stat` / `diff -U10` 写入 `.claude/reports/review-package.md`，Layer 1 三路 + Layer 2 codex exec 四路读同一个文件、审同一个 range；新增两条红线（BASE 禁用 `HEAD~1`、三路必须按命名 agent 派发不得退化成 `general-purpose`）
+- `templates/goal-automation/codex-automation.toml.example` + `cc-routine-prompt.md.example`：无人值守场景（Codex automation / Claude Code routine）的可复制模板
+- `eval/scenarios/skill-behavior/`：技能行为回归目录（system=skill 正文、user=诱发任务、judge=LLM 判合规，与任务级 `../*.json` 分工），含 starter 示例 `sb-001-continuous-execution.yaml`
+- `scripts/dh-lint.py` 新检查 `--check=skill-edit-evidence`：diff 命中 `skills/**/SKILL.md` 的 `description` 行或连续执行/完成契约段时，要求 `eval/results/` 下存在对应的 RED+GREEN 压力测试证据文件，否则 exit 1；仅显式调用，不进 `run-all` 默认集合
+- `docs/quickstart.md` §7：`/goal` 一句话启动模板 + 触发机制说明
+
+### Changed
+
+- **21 条 SKILL.md description 全量英文重写**（trigger-only + 中英双语触发词 + `Do not use for` 边界），修正三个根因：Description Trap（概括 workflow）、纯中文触发词（非中文任务措辞匹配不到）、零边界（相邻技能互相抢匹配）
+- **技能改名**（frontmatter `name` 字段，目录名不变）：`dev` → `dev-pipeline`、`test-skill` 的 name → `run-tests`、`audit-skill` 的 name → `run-audit`、`review-skill` 的 name → `run-review`
+- `defaults/skill-map.yml` 与 `scripts/skill-resolver.py` 的 `SKILL_ALIASES` 同步清理死条目（`generic-prd`/`generic-plan`/`generic-validate`/`generic-remember` 四个从未存在的引用）
+- `hooks/hooks.json` 的 `SessionStart`/`PostToolUse` `timeout` 单位修正：原 `3000`/`5000` 是把秒误当毫秒写（实际等于 50/83 分钟），改为 `10`/`30` 秒
+- `scripts/dh-python.sh` venv 查找优先级改为 `CLAUDE_PLUGIN_DATA` → `CLAUDE_PLUGIN_ROOT` → 系统 python：`CLAUDE_PLUGIN_DATA` 是官方文档明示的跨版本持久目录，原先建在 `${CLAUDE_PLUGIN_ROOT}/.venv`（版本化目录）意味着每次发版都要重装 venv
+- `scripts/setup.sh` 收编为薄包装，实际逻辑迁入 `setup_report.py`
+- `hooks/session-init.py` 升级为体检摘要 + 指路 `/dev-harness:setup`（原先只打一行 venv 提示）
+
+### Removed
+
+- `skills/research/`、`skills/implement/` 两个纯重定向壳（正文只是"委托给 generic-*"，resolver 本身已能 fall-through 到 `generic-research`/`generic-implement`，处理方式同源 superpowers v5.1.0 删除 deprecated stub）
+
+### Fixed
+
+- `hooks/stop-hook.py` 头部补 `sys.stdout.reconfigure(encoding="utf-8")`，防止 Windows GBK 控制台下中文/箭头字符导致 hook 崩溃、pipeline 断裂
+- `hooks/stop-hook.py`：Codex 侧 `last_assistant_message` 为 `null` 时原先 `.get(k,"")` 曾返回 `None` 导致 `re.search(None)` 抛 `TypeError`，改为 `hook_input.get("last_assistant_message") or ""` 兜底
+- `hooks/stop-hook.py`：删除从未生效的 `context_window` 死代码分支（两平台 Stop payload 均无此字段）与恒假的 `is_context_limit_stop` / `is_user_abort` 猜测性字段守卫
+- `scripts/setup_report.py` 的 `codex_hook_trust` 检测原先用子串匹配 `config.toml` 里的 `"dev-harness"` 字样，会被 `[plugins]` 段同名字样假阳性命中；改为精确解析 `[hooks.state]` 条目键
+
+### Notes
+
+Wave 3（本条目）范围是文档同步 + eval 门禁，不包含：Cursor camelCase 事件名修复、Codex PostToolUse 工具名适配、5 项实测 Spike、Codex app-server goal JSON-RPC 桥接——这些仍是待办，详见 `docs/known-issues.md`。
+
+---
+
 ## [3.4.4] — 2026-05-12
 
 ### Fixed — v3.4.3 code review 跟进（CRITICAL + 2 HIGH + 2 MEDIUM）

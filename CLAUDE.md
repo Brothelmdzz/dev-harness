@@ -30,6 +30,9 @@ ls eval/scenarios/                                       # v4 起步 5 条 scena
 bash scripts/detect-codex.sh                             # 检测 codex cli 是否就绪（A 阶段）
 python scripts/pitfall-analyze.py --threshold 3          # 提炼候选规则（B 阶段）
 
+# v4.5 setup 体检
+python scripts/setup_report.py --json [--fix]                # 或 /dev-harness:setup
+
 # 版本同步
 bash scripts/sync-plugin-meta.sh
 ```
@@ -39,11 +42,14 @@ bash scripts/sync-plugin-meta.sh
 ### 核心流
 
 ```
-/dev → skills/dev/SKILL.md (编排器)
+/dev → skills/dev/SKILL.md (name: dev-pipeline，编排器)
   → detect-stack.sh + skill-resolver.py + harness.py init
   → Pipeline 循环: 按 pipeline.yml 定义的阶段依次执行
-    每步完成 → harness.py update
-    Claude 想停 → stop-hook.py 检查防线，未完成则 block 续跑
+    每步完成 → harness.py update 然后 harness.py hud（hud 输出以 Bash 工具结果落 transcript）
+    Claude 想停 → Stop 事件双 hook 并行、OR-block ⇒ AND-to-stop：
+      command hook（stop-hook.py，确定性地板：真实 gate/DAG/错误计数）
+      prompt hook（haiku 完成裁判，只读 transcript 里的 hud 表格判断语义是否真完成）
+      任一 block 即续跑，全部 allow 才真停
 ```
 
 `${CLAUDE_PLUGIN_ROOT}` 定位所有脚本。Cursor 用 `${CURSOR_PLUGIN_ROOT}`，`session-init.py` 自动映射。
@@ -101,16 +107,18 @@ build/test 失败 → stop-hook capture_failure() → .claude/pitfall-journal.js
 
 | 目录 | 职责 |
 |------|------|
-| `skills/dev/` | `/dev` 入口编排器 |
-| `skills/fix/` `test-skill/` `audit-skill/` `review-skill/` `ask/` | 轻量入口 Skill |
+| `commands/` | v4.5 新增：7 个用户专属入口命令（dev/fix/ask/run-tests/run-audit/run-review/setup），薄壳委托对应 skill，不占 skills 隐式匹配预算 |
+| `skills/dev/` | `/dev` 入口编排器，frontmatter `name: dev-pipeline`（目录名未变，技能名已改避免与 `dev` 泛名碰撞）|
+| `skills/fix/` `test-skill/` `audit-skill/` `review-skill/` `ask/` | 轻量入口 Skill；`test-skill`/`audit-skill`/`review-skill` 的 `name` 字段已改为 `run-tests`/`run-audit`/`run-review`（目录名未变）|
 | `skills/generic-*/` | L3 内置 Skill |
-| `scripts/` | Python/Shell 工具脚本（含 v4 新增 `detect-codex.sh` `pitfall-analyze.py`）|
+| `.codex-plugin/` | v4.5 新增：Codex 插件清单（`interface` 块），故意不声明 `hooks` 字段以启用 hooks.json 的约定发现 |
+| `scripts/` | Python/Shell 工具脚本（含 v4 `detect-codex.sh` `pitfall-analyze.py`，v4.5 新增 `setup_report.py`）|
 | `scripts/lib/` | 共享库: state / compat / pipeline / plan / project / config / utils / hook_trace / **pitfall** (v4) |
-| `hooks/` | stop-hook + plan-watcher + activity-watcher + session-init + hooks.json |
+| `hooks/` | stop-hook + plan-watcher + activity-watcher + session-init + hud-context (v4.5) + hooks.json |
 | `agents/` | 12 个 Agent 定义 |
 | `defaults/` | pipeline.yml + skill-map.yml |
-| `templates/` | 项目配置模板 + **`project-skeleton/`** 三层规范骨架（v4 C 阶段，20 个文件）|
-| `eval/` | 评测框架 + **`scenarios/`** 5 条真实任务（v4 起步基线）|
+| `templates/` | 项目配置模板 + `project-skeleton/` 三层规范骨架（v4 C 阶段，20 个文件）+ **`goal-automation/`** v4.5 新增：`/goal` 咒语与 CC routine / Codex automation.toml 模板 |
+| `eval/` | 评测框架 + `scenarios/` 任务级真实任务 + **`scenarios/skill-behavior/`** v4.5 新增：技能行为回归（RED-GREEN-REFACTOR）|
 | `docs/` | 文档：`design-philosophy.md` (公开) + `external-references-2026-05.md` (公开) + 内部研究文档（私有）|
 | `.design/` | 内部设计研究（`.gitignore` 排除）|
 
@@ -127,3 +135,5 @@ build/test 失败 → stop-hook capture_failure() → .claude/pitfall-journal.js
 - `pipeline.yml` 每个 stage 支持 `depends_on` 字段，基于 DAG 拓扑推进
 - **设计哲学是最高准则**：任何架构决策先对照 `docs/design-philosophy.md` 八大原则 + 九条架构红线
 - **docs/ 公开范围**：`docs/` 整体被 `.gitignore` 排除，仅 `design-philosophy.md` `external-references-2026-05.md` `quickstart.md` `contributing.md` `known-issues.md` 白名单公开
+- **`defaults/skill-map.yml` 与 `scripts/skill-resolver.py` 的 `SKILL_ALIASES` 是双源**（历史遗留，尚未合一）：改一处必须同步改另一处，否则 resolver 与文档声明的别名会漂移
+- **`hooks/hooks.json` 的 `command` 字符串是 Codex 信任冻结契约**：Codex 按整个 hook 块计算信任哈希，`command` 一行不变则改 `stop-hook.py`/`hud-context.py` 等 `.py` 内容不会触发用户重批准；反之只要动了 `command` 行本身（哪怕只加个空格），Codex 侧就要求用户重新走一次 `/hooks` 批准

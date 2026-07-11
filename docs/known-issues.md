@@ -1,5 +1,83 @@
 # Known Issues
 
+## v4.5 遗留问题（2026-07-11）
+
+### Codex goal 桥接（app-server JSON-RPC）：明确 NO-GO
+
+**判定：现在不做。** Codex app-server 暴露了 `thread/goal/set` 等 JSON-RPC 方法，
+理论上可以从外部（非模型）直接设置/订阅 goal，但：
+
+| 维度 | 现状 | 结论 |
+|---|---|---|
+| app-server 状态 | experimental，goal 方法未标 stable | 接口还在动 |
+| 接口 churn 风险 | `expected_goal_id` 陈旧保护、`GoalRuntimeEvent` 10+ 枚举都是内部实现细节，随版本变 | 维护税高 |
+| 外部可控性 | 模型工具只暴露 `create_goal`/`update_goal(complete)`，pause/resume/budget 是系统控、模型和外部都碰不到 | 桥接只能 set + 订阅，控制力弱 |
+| 现有替代 | Codex Stop hook 已与 Claude Code 1:1 兼容且已随 `hooks.json` ship | 续跑防线走 Stop 层已经够用，没有桥接的必要收益 |
+
+**GO 的触发条件**（满足以下两者才重启评估）：
+1. `codex features list` 里 `goals` 特性方法脱离 experimental；**且**
+2. 出现 Stop-hook 层给不了的真实需求——例如需要 `token_budget` 硬上限，
+   或跨重启持久化的 goal 状态机（这两点正是 Stop hook 做不到、goal 的
+   sqlite 存储能做到的）。
+
+若真要做，最小 spike 形态是一个可选桥接脚本（约 150 行）：起 `codex app-server`
+子进程、`thread/goal/set` 一次、订阅 `thread/goal/updated`/`thread/goal/cleared`
+通知判断完成——默认不启用，只在 `detect-codex.sh` 探测到 app-server 可用时才暴露。
+
+### 5 项待实测 Spike（穿插在各批次前，各 ≤ 半小时）
+
+以下机制目前都是**按官方文档推断实现，尚未在真机验证过**，标注为待办：
+
+1. **Cursor 事件名大小写金丝雀**（风险最高——Cursor 官方要求 camelCase 如
+   `sessionStart`，现有 `.cursor-plugin/hooks.json` 是 PascalCase，意味着
+   Cursor 上所有 hook 可能从未真正触发过）。验证法：加一条独特标记的
+   camelCase hook，真机对照是否触发。
+2. **Codex PostToolUse 工具名**：现有 `hooks.json` 的 PostToolUse matcher
+   （`Write|Edit|Bash|Task`）是 Claude Code 的工具名，Codex 侧工具名是否
+   一致未验证——不一致会导致 `plan-watcher.py`/`activity-watcher.py`/
+   `hud-context.py` 在 Codex 上静默休眠。验证法：注册 match-all PostToolUse
+   观察 Codex 实际传入的 `tool_name`。
+3. **prompt hook 的 `model` 短别名跨平台解析**：v4.5 新增的 Stop 完成裁判
+   hook 用 `"model": "haiku"` 短别名，这个字段在 Codex 侧如何解析（是否
+   识别同款短别名、是否需要完整模型 ID）未验证。
+4. **Codex Stop hook 信任流程真机验证**：需要真机触发一次 `/hooks` 批准，
+   确认 `~/.codex/config.toml [hooks.state]` 落 `dev-harness` 条目、Stop
+   确实 block 续跑；顺带验证 `python -c "..."` 引号在 Codex Windows 场景
+   下的存活性（是否经过 cmd.exe 转义层）。
+5. **双 Stop hook 并行行为**：`hooks.json` 现在同时注册了 command
+   （`stop-hook.py`）+ prompt（haiku 完成裁判）两个 Stop hook，需要真机
+   观察两者是否真的并行 fire、`reason` 如何合并展示、`stop_hook_active`
+   计数是否如预期在两个 hook 间共享（避免其中一个 hook 单独触发死循环
+   防线失效）。
+
+### `codex_cli` 检测在本机被判"未就绪"——实测结论：不是版本阈值问题
+
+`scripts/setup_report.py` 的 `codex_cli` 检测项（复用 `detect-codex.sh` 的
+退出码）在本机（Windows，codex-cli 0.142.4，配置文件完整）返回 `skip`
+（判定未就绪），但直接在交互式 Git Bash 里跑
+`bash scripts/detect-codex.sh -v` 返回 `exit 0`（就绪）。已实测复现，**根因
+不是 detect-codex.sh 对版本判断过严**，而是两处环境差异叠加：
+
+1. `check_codex_cli` 用 `ctx.plugin_root / "scripts" / "detect-codex.sh"`
+   构造路径后直接 `str()` 传给 `subprocess.run(["bash", ...])`——`Path.__str__()`
+   在 Windows 上产出反斜杠路径，Git Bash 收到反斜杠路径参数会找不到脚本
+   （`rc=127`）。改用 `.as_posix()` 后脚本才能被定位到。
+2. 脚本定位到之后，**在 Python subprocess 派生的 bash 子进程里，`codex`
+   解析到的是一个 WSL 风格路径**（`/mnt/c/Users/.../codex`），**而不是**
+   交互式终端里解析到的 Windows npm 全局安装路径（`/c/Users/.../codex`）；
+   前者执行 `codex --version` 会失败，`detect-codex.sh` 因此（正确地）判定
+   "codex cli 损坏"并返回未就绪。
+
+即同一台机器、同一个 codex 安装，在两种调用路径下给出不同判定——这是环境
+相关的 flakiness，不是"版本判断偏严待放宽"。修复不在本次 Wave 3 范围内
+（`scripts/setup_report.py` 不在本次改动的文件所有权内），留给下一次改动
+`setup_report.py` 时处理，方向：(a) `check_codex_cli` 改用 `script.as_posix()`；
+(b) 排查 Python subprocess 起的 bash 子进程 PATH 顺序为何优先命中 WSL 路径，
+必要时显式清理传给子进程的 `PATH`，或改用 `shutil.which("codex")` 在
+Python 层直接探测，不依赖子 shell 的 PATH 解析。
+
+---
+
 ## v3.4.4 跳过的 LOW 级问题（2026-05-12 全量审查跟进）
 
 > 来源：v3.4.x 全量 0-context code review（commit `60d7db8`）

@@ -1,0 +1,62 @@
+<!--
+Claude Code routine（云端定时 agent）prompt 模板 —— 无人值守跑 dev-harness 流水线
+
+用法：`/schedule` 建 routine 时，把下面「Routine prompt 正文」整段粘进去，
+替换所有 <尖括号占位符>。routine 跑在 Anthropic 云端 fresh clone 里，
+prompt 必须自包含（self-contained），不能假设任何本地状态或对话历史。
+
+============================================================
+前置条件（缺一不可——routine 环境和交互式会话差异很大）
+============================================================
+
+1. 【插件必须在仓库里，不能只装在本地】
+   routine 每次运行都从目标仓库的默认分支重新 clone，本地安装的插件
+   不会带过去。二选一：
+     (a) 把 dev-harness 的 skill 目录和 harness 脚本直接 commit 进
+         目标仓库的 `.claude/skills/` 与 `.claude/harness/`（推荐，最简单）；
+     (b) 在 routine 所属 environment 的 setup script 里执行插件安装
+         （`claude plugin install ...` 或等价命令），确保每次 fresh clone
+         后都会重新装好。
+
+2. 【skill 不能禁用模型自主调用】
+   如果 skill 的 frontmatter 写了 `disable-model-invocation: true`，
+   routine（以及 `/loop`）都只会把它当纯文本喂给模型，不会真的执行。
+   确认 dev-pipeline 等相关 skill 没有这个字段。
+
+3. 【最小间隔 1 小时】
+   Claude Code routine 官方限制了触发频率下限，同一 routine 不能比
+   1 小时一次更密。设计 cron 表达式时留足这个余量。
+
+4. 【routine 内部完成判据只能靠自然语言，别指望 /goal】
+   官方文档列出的 `/goal` 支持场景（非交互模式 / 桌面 App / Remote
+   Control）里没有明确包含 routine；routine 内部叠加 `/goal` 是否生效
+   未文档化，不要依赖它。完成标准直接写进 prompt 正文的自然语言里
+   （像下面这样，指定"跑 hud 再判断"而不是"看着感觉像做完了"）。
+
+5. 【产出方式】routine 没有交互式确认，跑完总要留一个可审查的产物——
+   通常是开一个 PR，而不是直接改动默认分支。
+-->
+
+# Routine prompt 正文（粘进 `/schedule` 交互式表单或 web 界面）
+
+```
+Run the full dev-harness pipeline for the task described in
+<path/to/your/task-spec.md> against this repository.
+
+Steps:
+1. Read <path/to/your/task-spec.md> for the task spec and acceptance criteria.
+2. Invoke the dev-pipeline skill (must be committed at .claude/skills/dev/
+   in this repository — routines run on a fresh clone with no local
+   plugin installs).
+3. After each stage, run `python <path/to/harness>/harness.py hud` and keep
+   going until every stage is DONE and every gate is green. Do not stop
+   between stages to ask for confirmation.
+4. When the hud shows all stages DONE and all gates pass, open a pull
+   request from a new branch summarizing what changed and the gate results.
+5. If any gate stays red after 40 turns, stop and open a draft PR describing
+   exactly which stage/gate is blocking, instead of looping forever.
+
+Success = the hud output reports all stages DONE, all gates pass, and a
+pull request is open. Do not infer success from prose alone — the hud
+table is the only evidence that counts.
+```

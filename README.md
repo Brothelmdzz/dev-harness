@@ -19,6 +19,10 @@ What you get out of the box:
 - **One command, full pipeline**: `/dev` resolves the right skill at each stage automatically.
 - **Multi-model code review** (v4): three Claude reviewers (sonnet × 2 + opus) plus optional cross-vendor adversarial review via Codex CLI.
 - **Six stop-hook defenses**: rate limit, context overflow, timeout, retry storms — never silently dies.
+- **`/goal` native pairing** (v4.5): a built-in prompt Stop hook mirrors `/goal`'s completion judge, reading the pipeline's own `hud` output — pair it with a one-line `/goal` incantation to drive `/dev` from outside the orchestrator too.
+- **Codex as a first-class citizen** (v4.5): `.codex-plugin/plugin.json` manifest + `commands/` slash-command entries make dev-harness a real Codex plugin, not just a Claude Code one.
+- **`/dev-harness:setup` doctor** (v4.5): one command reports venv / hook-trust / manifest health across Claude Code, Cursor, and Codex, with an optional `--fix` repair pass.
+- **review-package handoff** (v4.5): code review reads one merge-base-anchored diff file instead of pasting diffs into every reviewer prompt — all reviewers audit the same range.
 
 ## Quick start
 
@@ -31,6 +35,8 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh"
 # Then in any project
 /dev
 ```
+
+Prefer starting from `/goal` instead? One line gets you the same pipeline — see [Quick Start §7](docs/quickstart.md#7-goal-一句话启动v45) for the incantation.
 
 ## How it works
 

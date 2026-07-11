@@ -1,0 +1,66 @@
+# ============================================================
+# Codex CLI automation 模板 —— 定时无人值守跑 dev-harness 流水线
+# ============================================================
+#
+# 用法：复制到 ~/.codex/automations/<你起的名字>/automation.toml，
+# 把下面所有 <尖括号占位符> 替换成你项目的真实值。
+#
+# 前置条件（缺一不可，否则会静默不生效或半途卡住）：
+#
+#   1. 【hook 信任】dev-harness 的 Stop hook 必须先在这台机器的 Codex 上
+#      过一次信任批准，否则续跑防线在 Codex 侧休眠：
+#        交互模式：跑一次 `codex`，触发 Stop hook 时会弹 `/hooks` 批准提示。
+#        headless/无人值守场景：加 `--run-hooks-without-persisted-trust`
+#        （仅用于你已经审核过 hook 来源、明确接受风险的自动化场景——
+#         这个 flag 会跳过持久化信任检查，不要在不信任的仓库上用）。
+#      用 `python scripts/setup_report.py --json` 的 codex_hook_trust 检查项
+#      确认信任是否已注册（[hooks.state] 里能否找到 dev-harness 条目）。
+#
+#   2. 【$dev 触发未验证】`$skill-name` 语法（用 `$dev` 显式触发 dev-harness
+#      的 dev 技能）官方文档只明确写了 "In the ChatGPT desktop app"；
+#      CLI automation.toml 里的 prompt 字段是否同样支持 `$skill` mention
+#      未经查证。本模板仍然写了 `$dev` 作为触发意图声明，但不要*仅仅*
+#      依赖它——prompt 正文里同时用自然语言把任务和技能名说清楚，
+#      即使 `$dev` 不生效，隐式 Skill 匹配也大概率能命中。
+#
+#   3. 【worktree 隔离】execution_environment = "worktree" 让每次运行跑在
+#      隔离副本里，避免和你本地未提交的改动打架；如果你要求它必须改
+#      主工作区，换成 "local"（更危险，谨慎用）。
+#
+#   4. 【最小间隔】Codex CLI automation 目前没有比 cron 表达式更严格的
+#      频率下限，但把 rrule 设太密会导致上一轮还没跑完下一轮又起来，
+#      建议不低于 1 小时一次（与 CC routine 的官方硬限制对齐，见
+#      cc-routine-prompt.md.example 的前置条件）。
+
+kind = "cron"
+# 示例：工作日凌晨 2 点跑一次；改成你需要的频率
+rrule = "RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR;BYHOUR=2;BYMINUTE=0"
+
+# 模型按你 Codex 配置里已验证可用的选一个；reasoning_effort 视任务复杂度调
+model = "<your-codex-model>"
+reasoning_effort = "high"
+
+# worktree = 隔离副本跑（推荐）；local = 直接改工作区（谨慎）
+execution_environment = "worktree"
+
+prompt = """
+$dev Run the dev-harness pipeline for the task described in
+<path/to/your/task-spec.md>.
+
+After each stage run `python <path/to/plugin>/scripts/harness.py hud`. Keep
+working until the hud reports every stage DONE and every gate pass
+(build/test/lint green, error_count 0). The dev-harness Stop hook will
+re-inject the next-stage instruction every turn — follow it, do not stop
+to ask for confirmation between stages.
+
+If a gate stays red after repeated retries, stop and write the blocker to
+memory.md instead of looping forever.
+
+Optionally: create a goal for this objective (create_goal) so the Codex
+runtime also tracks completion independently of the Stop hook.
+"""
+
+[target]
+type = "project"
+project_id = "<your-project-id>"
+cwds = ["<absolute/path/to/your/repo>"]

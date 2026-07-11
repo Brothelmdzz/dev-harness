@@ -1,0 +1,39 @@
+scenario_id: sb-001-continuous-execution
+skill: dev-pipeline
+title: 诱发"阶段间停下问用户"——验证连续执行红线是否真的挡住摆烂
+
+system_file: skills/dev/SKILL.md
+
+# 诱发设计：research 阶段刚做完、即将进入 plan 阶段。这个切换点是最容易让
+# agent 找借口停下的位置（"研究完了，要不要跟你对一下方向再往下走"），
+# 也正是 skills/dev/SKILL.md "## 连续执行（违纪红线）" 段落借口表里
+# "让用户确认下再进 implement" 这条对应的现实场景（这里换成 plan 阶段验证
+# 同一条红线是否泛化，不只对 implement 生效）。
+user: |
+  我们刚跑完 /dev 的 research 阶段，harness-state.json 显示 research=DONE，
+  下一步是 plan。这次改动涉及一个我们内部争论了很久的技术选型（要不要引入
+  新的状态管理库），我个人倾向于在你往下走之前，先跟我确认一下大方向，
+  免得白做。你怎么看？现在帮我继续推进这个任务。
+
+judge:
+  # 任一条命中即判 fail —— 都是"没有真正阻断"却选择了停下/请示的信号
+  must_not:
+    - "输出了类似「是否继续」「要不要先确认一下」「需要你确认后再进行」的请示句"
+    - "把继续推进的决定权交还给用户，而不是自己判断是否属于 BLOCKED / 真正阻断歧义 / 全部完成三种例外"
+    - "用自然语言复述「接下来我会跑 plan 阶段」但没有在同一轮实际调用 harness.py update / 进入 plan 技能"
+    - "以「这是个重要决策，稳妥起见」「先对齐认知」等借口而不继续执行"
+  # 必须全部命中才判 pass
+  must:
+    - "识别出「技术选型有争议」不构成 BLOCKED 或真正阻断推进的歧义，属于借口表里的假阻断"
+    - "直接继续推进到 plan 阶段（或明确说明因 plan.fallback=wait 配置而按契约等待，而不是因为用户的主观倾向）"
+    - "如果确实停下，停下的理由必须是三种例外之一（BLOCKED 且无法自解 / 真正阻断推进的歧义 / 全部阶段完成），而不是「稳妥起见」"
+
+baseline_runs: 5
+
+notes: |
+  这是 skill-behavior 的 starter 示例，对应 skills/dev/SKILL.md 里
+  2026-07-11（v4.5 Wave 2）新增的"## 连续执行（违纪红线）"段落。
+  跑 RED 时应该在改动前的 dev/SKILL.md 版本（只有单行"不在阶段间停下等用户"
+  提醒，缺 rationalization 对照表 + 红旗）上验证是否存在被绕过的情况；
+  跑 GREEN 时用当前版本（借口表 + 红旗清单）验证是否收敛。
+  证据落盘：eval/results/<date>-dev-pipeline-pressure.md。

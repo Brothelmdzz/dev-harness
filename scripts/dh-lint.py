@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Callable
@@ -34,6 +35,9 @@ if sys.platform == "win32":
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_LIMIT_VIOLATIONS = 15  # 单条检查最多显示几个违反
+
+# --check=skill-edit-evidence 用的对比基准，由 main() 按 --base 参数写入
+_BASE_REF = "master"
 
 # ==================== Frontmatter 工具 ====================
 
@@ -187,6 +191,89 @@ def check_model_tier_consistency() -> list[tuple]:
     return violations
 
 
+# ==================== v4.5: skill 编辑证据门禁 ====================
+
+def _git(args: list[str], timeout: int = 15) -> tuple[int, str, str]:
+    """跑一条 git 命令，返回 (returncode, stdout, stderr)，异常统一收敛为 rc=-1。"""
+    try:
+        r = subprocess.run(
+            ["git", *args], cwd=ROOT, capture_output=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+        )
+        return r.returncode, r.stdout, r.stderr
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return -1, "", str(e)
+
+
+# 命中任一即视为"触碰了行为契约"：description 字段本身、或 dev-pipeline /
+# generic-implement 里的连续执行红线段、启动声明、完成契约结构化槽
+SKILL_EDIT_TRIGGER_KEYWORDS = ("连续执行（违纪红线）", "启动声明", "完成契约")
+
+
+def _diff_touches_trigger(diff_text: str) -> bool:
+    """只看新增/删除行（+/- 前缀），跳过 diff 文件头 +++/---。"""
+    for line in diff_text.splitlines():
+        if not line or line[0] not in "+-" or line.startswith(("+++", "---")):
+            continue
+        content = line[1:]
+        if re.match(r"^\s*description:", content):
+            return True
+        if any(kw in content for kw in SKILL_EDIT_TRIGGER_KEYWORDS):
+            return True
+    return False
+
+
+def _skill_slug(skill_md: Path) -> str:
+    """优先用 frontmatter 的 name 字段（技能真实身份），没有则退回目录名。"""
+    fm = parse_frontmatter(skill_md.read_text(encoding="utf-8", errors="replace"))
+    if fm and fm.get("name"):
+        return fm["name"]
+    return skill_md.parent.name
+
+
+def check_skill_edit_evidence() -> list[tuple]:
+    """v4.5: SKILL.md 编辑证据门禁（Iron Law 对 EDIT 同样适用，不只 NEW）。
+
+    diff 命中 skills/**/SKILL.md 的 description 行、或连续执行红线/启动声明/
+    完成契约段时，要求 eval/results/ 下存在本次改动对应的 RED+GREEN 压力测试
+    证据文件（命名约定 <date>-<skill>-pressure.md，只检查存在性 + 非空）。
+
+    对比基准由 --base 指定（默认 master）。只在显式
+    --check=skill-edit-evidence 时运行，不进 run-all 默认集合——
+    改行为话术是低频动作，不该拖慢日常 lint。
+    """
+    rc, out, err = _git(["diff", f"{_BASE_REF}...HEAD", "--name-only"])
+    if rc != 0:
+        return [(Path("(git)"), f"git diff --name-only 失败（base={_BASE_REF}）: {err.strip()[:200]}")]
+
+    skill_files = [ln for ln in out.splitlines() if re.match(r"^skills/.+/SKILL\.md$", ln)]
+    if not skill_files:
+        return []
+
+    results_dir = ROOT / "eval" / "results"
+    violations = []
+    for rel in skill_files:
+        f = ROOT / rel
+        if not f.exists():
+            continue  # 本次改动删掉了这个 skill，不需要证据
+        rc2, diff_text, _ = _git(["diff", f"{_BASE_REF}...HEAD", "--", rel])
+        if rc2 != 0 or not _diff_touches_trigger(diff_text):
+            continue
+        slug = _skill_slug(f)
+        has_evidence = results_dir.exists() and any(
+            p.is_file() and p.stat().st_size > 0
+            for p in results_dir.glob(f"*-{slug}-pressure.md")
+        )
+        if not has_evidence:
+            violations.append((
+                Path(rel),
+                f"description/连续执行/完成契约改动缺 RED+GREEN 证据 — "
+                f"先跑改动前 baseline ≥5 次逐字记录失败(RED)，再跑改动后 ≥5 次确认合规(GREEN)，"
+                f"存到 eval/results/<date>-{slug}-pressure.md",
+            ))
+    return violations
+
+
 # ==================== TODO（渐进补） ====================
 
 def check_red_line_1_todo() -> list[tuple]:
@@ -244,10 +331,13 @@ CHECKS: dict[str, tuple[str, Check]] = {
     "model-tier":        ("agent model tier matches research §config",   check_model_tier_consistency),
     "red-line-1-todo":   ("PR template exists (red line 1)",             check_red_line_1_todo),
     "red-line-9-urls":   ("no inline external URLs in prompts (loose)",  check_red_line_9_inline_urls),
+    "skill-edit-evidence": ("SKILL.md 行为改动需 RED+GREEN 压力测试证据 (CI/PR opt-in)", check_skill_edit_evidence),
 }
 
-# 默认运行的检查（红线 9 因 false positive 风险默认不跑，需 --check=red-line-9-urls 显式启用）
-DEFAULT_CHECKS = [k for k in CHECKS if k != "red-line-9-urls"]
+# 默认运行的检查：红线 9 因 false positive 风险默认不跑（需 --check=red-line-9-urls 显式启用），
+# skill-edit-evidence 需要 git 对比基准、只在 CI/PR 场景显式调用，同样不进 run-all
+_OPT_IN_ONLY = ("red-line-9-urls", "skill-edit-evidence")
+DEFAULT_CHECKS = [k for k in CHECKS if k not in _OPT_IN_ONLY]
 
 
 # ==================== CLI ====================
@@ -264,7 +354,14 @@ def main() -> int:
     parser.add_argument("--list", action="store_true", help="list all registered checks and exit")
     parser.add_argument("--verbose", action="store_true", help="show all violations (no cap)")
     parser.add_argument("--exit-zero", action="store_true", help="always exit 0 even if violations found")
+    parser.add_argument(
+        "--base", default="master",
+        help="git ref to diff against for --check=skill-edit-evidence (default: master)",
+    )
     args = parser.parse_args()
+
+    global _BASE_REF
+    _BASE_REF = args.base
 
     if args.list:
         for name, (title, _) in CHECKS.items():
