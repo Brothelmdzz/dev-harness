@@ -10,8 +10,19 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# 兼容旧文档里的 --with-eval：eval 已独立出安装流程，此处剥离该 flag 并提示新入口，
+# 其余参数原样透传给 setup_report.py --fix（不因未知参数硬崩 exit 2）
+ARGS=()
+for arg in "$@"; do
+    if [ "$arg" = "--with-eval" ]; then
+        echo "[Dev Harness] --with-eval 已废弃：eval 已独立成单独命令，运行 python eval/eval-runner.py run-all"
+    else
+        ARGS+=("$arg")
+    fi
+done
+
 echo "[Dev Harness] setup.sh 已迁移到 setup_report.py（--fix 模式），正在执行安装..."
 echo "  下次可直接用 /dev-harness:setup（先 doctor 体检，确认后再修复）"
 echo ""
 
-exec bash "$SCRIPT_DIR/dh-python.sh" "$SCRIPT_DIR/setup_report.py" --fix "$@"
+exec bash "$SCRIPT_DIR/dh-python.sh" "$SCRIPT_DIR/setup_report.py" --fix "${ARGS[@]}"

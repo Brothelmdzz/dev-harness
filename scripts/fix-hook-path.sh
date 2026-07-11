@@ -1,4 +1,7 @@
 #!/bin/bash
+# [DEPRECATED] 已被 scripts/setup_report.py 的 check_legacy_hook / _fix_legacy 收编，
+# 保留仅为兼容旧文档引用，勿再扩展。新入口：/dev-harness:setup --fix
+#
 # 修复 settings.json 中的 stop-hook 硬编码路径
 # 仅在用户主动运行时执行，不在 setup.sh 中自动执行
 

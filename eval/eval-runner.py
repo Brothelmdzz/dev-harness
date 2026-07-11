@@ -498,7 +498,9 @@ def test_hook_defense():
     })
     shutil.rmtree(tmpdir, ignore_errors=True)
 
-    # 防线 2: 上下文溢出放行
+    # 防线①（原上下文使用率检测）已于 v4.5 删除：两平台 Stop payload 都不含 context_window
+    # 字段，该字段现在必须被完全忽略——同样的输入下 hook 应该照常按 implement 未完成走
+    # 正常续跑（decision:block），而不是被这个不存在的字段影响判断
     tmpdir = _make_test_env()
     state = _base_state()
     _write_state(tmpdir, state)
@@ -507,8 +509,8 @@ def test_hook_defense():
         "context_window": {"used": 850000, "total": 1000000},
     })
     results.append({
-        "test": "defense_context_overflow",
-        "pass": "continue" in out.lower() or '"continue"' in out,
+        "test": "context_window_field_ignored",
+        "pass": "block" in out.lower() or "Phase 2" in out,
         "detail": f"output='{out[:80]}'"
     })
     shutil.rmtree(tmpdir, ignore_errors=True)

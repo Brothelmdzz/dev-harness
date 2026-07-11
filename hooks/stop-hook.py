@@ -50,7 +50,6 @@ _DEFAULT_STAGE_TIMEOUT_SEC = 1800
 _DEFAULT_MAX_DURATION = 7200
 _DEFAULT_SLIDING_WINDOW_MIN = 5
 _DEFAULT_SLIDING_WINDOW_MAX_EVENTS = 10
-_DEFAULT_CONTEXT_OVERFLOW_PCT = 80
 _DEFAULT_RATE_LIMIT_PAUSE_MIN = 15
 # v3.4.4 HIGH-A fix：原来用列表子串匹配（含裸 "resets"），用户讨论 rate limit / session reset
 # 等任何话题都会误触发 → 整个 pipeline 暂停 15 分钟。改用严格 regex 模式，要求强信号词组：
@@ -90,7 +89,6 @@ def _get_limits(state):
         "max_duration":         limits.get("max_duration",         metrics.get("max_duration", _DEFAULT_MAX_DURATION)),
         "window_minutes":       limits.get("window_minutes",       _DEFAULT_SLIDING_WINDOW_MIN),
         "max_events":           limits.get("max_events",           _DEFAULT_SLIDING_WINDOW_MAX_EVENTS),
-        "context_overflow_pct": limits.get("context_overflow_pct", _DEFAULT_CONTEXT_OVERFLOW_PCT),
         "rate_limit_pause_min": limits.get("rate_limit_pause_min", _DEFAULT_RATE_LIMIT_PAUSE_MIN),
     }
 
@@ -188,7 +186,6 @@ def migrate_legacy_state(old):
             "max_duration":         int(_raw_limits.get("max_duration", 7200)),
             "window_minutes":       int(_raw_limits.get("window_minutes", 5)),
             "max_events":           int(_raw_limits.get("max_events", 10)),
-            "context_overflow_pct": int(_raw_limits.get("context_overflow_pct", 80)),
             "rate_limit_pause_min": int(_raw_limits.get("rate_limit_pause_min", 15)),
             "max_retries":          int(_raw_limits.get("max_retries", 3)),
         }
@@ -322,6 +319,8 @@ def _handle_implement_continue(state, stage, project_root, state_file, max_retri
     # 检查死循环
     for p in phases:
         if p.get("error_count", 0) >= max_retries:
+            # 防线 6 硬停：标记 paused 让完成裁判放行（fix 2），避免裁判反向 block 中和硬停
+            _escalate_pause(state, state_file, "error_count")
             return ("exit", "")
     # 查找待执行 Phase
     pending = [p for p in phases if p.get("status") == "PENDING"]
@@ -335,10 +334,6 @@ def _handle_implement_continue(state, stage, project_root, state_file, max_retri
     stage["completed_at"] = now_iso()
     state["metrics"]["stages_completed"] = state["metrics"].get("stages_completed", 0) + 1
     return ("mark_done", "")
-
-def output_continue():
-    """允许停止（不阻拦），学习 OMC 的 {continue: true} 模式"""
-    print(json.dumps({"continue": True, "suppressOutput": True}))
 
 # is_context_limit_stop() 与 is_user_abort() 已删除（v4.5）：
 # 二者读取的 stop_reason / end_turn_reason / user_requested 等字段均不在 CC / Codex
@@ -488,6 +483,7 @@ def main():
             )
             if result == "soft":
                 return
+            _escalate_pause(state, state_file, "stage_timeout")
             sys.exit(0)
 
     # ==================== 防线 4: 总运行时长 ====================
@@ -505,6 +501,7 @@ def main():
             )
             if result == "soft":
                 return
+            _escalate_pause(state, state_file, "total_timeout")
             sys.exit(0)
 
     # ==================== 防线 5: 滑动窗口频率限制 ====================
@@ -520,6 +517,7 @@ def main():
         )
         if result == "soft":
             return
+        _escalate_pause(state, state_file, "frequency_limit")
         sys.exit(0)
 
     # ==================== implement 阶段续跑逻辑（统一处理） ====================
@@ -687,6 +685,15 @@ def main():
 def find_next(pipeline, current_name):
     """找到下一组可执行阶段（委托给 lib.pipeline）"""
     return _lib_find_next(pipeline, current_name)
+
+def _escalate_pause(state, state_file, defense_name):
+    """硬停前把 state 标记为 paused，让 prompt 完成裁判据此放行（规则 2：paused → ok:true），
+    避免裁判把硬停误判为"流水线未完成"而反向 block、中和硬停。复用 rate-limit 的 paused
+    写入机制并保持原子写；pause_reason 用 'escalated: <防线名>' 与 rate_limit 区分。
+    hud 快照 / render_hud 会渲染 paused 行，把这个证据落进 transcript。"""
+    state["paused"] = True
+    state["pause_reason"] = f"escalated: {defense_name}"
+    save_state(state, state_file)
 
 def output_block(reason, state, project_root):
     ctx = _build_context_summary(state, project_root)

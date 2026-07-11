@@ -18,7 +18,7 @@ What you get out of the box:
 
 - **One command, full pipeline**: `/dev` resolves the right skill at each stage automatically.
 - **Multi-model code review** (v4): three Claude reviewers (sonnet × 2 + opus) plus optional cross-vendor adversarial review via Codex CLI.
-- **Six stop-hook defenses**: rate limit, context overflow, timeout, retry storms — never silently dies.
+- **Five stop-hook defenses**: rate limit, timeout, retry storms — never silently dies. Context management is delegated to the platform's own auto-compact (v4.5).
 - **`/goal` native pairing** (v4.5): a built-in prompt Stop hook mirrors `/goal`'s completion judge, reading the pipeline's own `hud` output — pair it with a one-line `/goal` incantation to drive `/dev` from outside the orchestrator too.
 - **Codex as a first-class citizen** (v4.5): `.codex-plugin/plugin.json` manifest + `commands/` slash-command entries make dev-harness a real Codex plugin, not just a Claude Code one.
 - **`/dev-harness:setup` doctor** (v4.5): one command reports venv / hook-trust / manifest health across Claude Code, Cursor, and Codex, with an optional `--fix` repair pass.
@@ -271,7 +271,7 @@ Routes are defined in `defaults/pipeline.yml`; override per-project in `.claude/
 
 | Symptom | Fix |
 |---------|-----|
-| Hook path stale after upgrade | `bash "${CLAUDE_PLUGIN_ROOT}/scripts/fix-hook-path.sh"` |
+| Hook path stale after upgrade | `/dev-harness:setup --fix` |
 | `implement` halts mid-stage | check `.claude/harness-state.json` phases — empty triggers plan-watcher fallback automatically |
 | Web HUD has no data | `harness.py web-hud --project /path` |
 | Cross-vendor review never runs | `bash scripts/detect-codex.sh -v` to see why |
@@ -319,16 +319,17 @@ bash scripts/sync-plugin-meta.sh [3.4.1]
 <details>
 <summary><strong>Stop-hook six defenses</strong> (click to expand)</summary>
 
-The stop-hook prevents Claude from halting mid-pipeline. Six defenses (priority order):
+The stop-hook prevents Claude from halting mid-pipeline. Five defenses (priority order):
 
 | # | Defense | Trigger | Action |
 |---|---------|---------|--------|
-| 1 | Context overflow | `context_window.used / total > 80%` | release (let compact run) |
-| 2 | Rate limit | `last_assistant_message` contains rate-limit keyword | pause 15 min, set `resume_at` |
-| 3 | Stage timeout | one stage running > 30 min | release |
-| 4 | Total timeout | task total > 2 h | release |
-| 5 | Frequency loop | > 10 resumes in 5 min (loop detection) | release |
-| 6 | Error budget | `error_count >= max_retries` (default 3) | release |
+| 1 | Rate limit | `last_assistant_message` contains rate-limit keyword | pause 15 min, set `resume_at` |
+| 2 | Stage timeout | one stage running > 30 min | release |
+| 3 | Total timeout | task total > 2 h | release |
+| 4 | Frequency loop | > 10 resumes in 5 min (loop detection) | release |
+| 5 | Error budget | `error_count >= max_retries` (default 3) | release |
+
+Context management has been pushed down to the platform's own auto-compact (v4.5) — dev-harness no longer tracks `context_window` itself; the field is ignored if a payload happens to include it.
 
 Override defaults in `dev-config.yml`:
 
@@ -336,7 +337,6 @@ Override defaults in `dev-config.yml`:
 limits:
   stage_timeout: 1800
   max_duration: 7200
-  context_overflow_pct: 80
   max_retries: 3
 ```
 

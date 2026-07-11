@@ -18,6 +18,7 @@ model_context: claude-opus-4.5+
 
 - **BASE 用 merge-base，绝不用 `HEAD~1`**：多 commit 任务用 `HEAD~1` 会被静默截断，只审最后一次提交。四路（三 Claude + codex）必须审同一个 range，range 由 Step 0 的 `$BASE` 唯一确定。
 - **三路必须按命名 agent 派发**（`code-reviewer` / `security-reviewer` / `architect`），不得退化成 `general-purpose`——命名 agent 的 frontmatter 已钉死模型（sonnet×2 + opus×1），退化成 general-purpose 会让 agent 继承会话最贵档模型，异构成本优势直接失效。
+- **BASE 解析失败必须显式中止，绝不静默喂默认值给 merge-base**：`git rev-parse --abbrev-ref origin/HEAD` 解析失败时会把字面量 `origin/HEAD` 回显到 stdout（不是空输出），经 `sed` 处理后变成 `HEAD`，导致 `merge-base HEAD HEAD` 算出的就是 HEAD 自己——空 diff、四路全程静默空审，退出码却是 0。Step 0 已改用 `git symbolic-ref` 判定，失败时直接报错退出，不允许继续。
 
 ## Step 0：记录 BASE + 生成 review package（一次，全 Layer 共用）
 
@@ -27,8 +28,19 @@ model_context: claude-opus-4.5+
 mkdir -p .claude/reports
 
 # BASE 用 merge-base，绝不用 HEAD~1（多 commit 任务会被 HEAD~1 静默截断只审最后一次提交）
-BASE_BRANCH=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null | sed 's|origin/||')
-BASE=$(git merge-base "${BASE_BRANCH:-master}" HEAD)
+# symbolic-ref 失败时才是真空输出 + 非零退出码（不像 rev-parse --abbrev-ref 会把字面量回显到 stdout）
+BASE_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
+if [ -z "$BASE_BRANCH" ]; then
+  if git show-ref --verify --quiet refs/heads/main; then
+    BASE_BRANCH=main
+  elif git show-ref --verify --quiet refs/heads/master; then
+    BASE_BRANCH=master
+  else
+    echo "[review] 无法解析 BASE 分支（无 origin/HEAD，也无本地 main/master），拒绝继续" >&2
+    exit 1
+  fi
+fi
+BASE=$(git merge-base "$BASE_BRANCH" HEAD) || { echo "[review] merge-base 计算失败" >&2; exit 1; }
 echo "$BASE" > .claude/reports/review-base.txt   # 供 Layer 2 复用同一 range
 
 PKG=".claude/reports/review-package.md"
@@ -37,7 +49,10 @@ PKG=".claude/reports/review-package.md"
   echo;              echo "## stat"; git diff --stat "$BASE"..HEAD
   echo;              echo "## diff"; git diff -U10   "$BASE"..HEAD
 } > "$PKG"
-echo "review package 已生成: $PKG (BASE=$BASE)"
+
+# 硬断言：空 range 说明 BASE 解析出了错，不是"恰好没改动"该有的沉默通过
+[ "$(git rev-list --count "$BASE"..HEAD)" -gt 0 ] || { echo "[review] BASE..HEAD 为空区间，配置错误" >&2; exit 1; }
+echo "review package 已生成: $PKG (BASE=$BASE, BASE_BRANCH=$BASE_BRANCH)"
 ```
 
 ## Layer 1: Claude 内部三路并行（必跑）

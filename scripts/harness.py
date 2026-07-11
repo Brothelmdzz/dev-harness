@@ -546,6 +546,9 @@ def cmd_update(args):
         if sid:
             finalize_session(sid)
     print(json.dumps({"stage": stage_name, "status": new_status}, ensure_ascii=False))
+    # update 输出自带 hud 快照：让状态落盘的同时把完成裁判证据落进 transcript，
+    # 模型无需再单独跑 hud（原 PostToolUse hud-context 兜底通道已随之删除）
+    print(_hud_snapshot(state))
 
 # ==================== HUD 面板 ====================
 
@@ -594,6 +597,36 @@ def pad_to_width(s, width):
         return s
     return s + " " * (width - dw)
 
+def _hud_snapshot(state):
+    """紧凑 hud 快照（纯 ASCII）：一行一个 stage，供 `update` 输出自带完成裁判证据。
+    与 hud 命令共用状态源，格式对齐 prompt 完成裁判可读的最简文本，避免模型再单独跑 hud。
+    implement 阶段附带 phase 进度与失败 gate；末尾给 current_stage / error_count / paused。"""
+    lines = ["[dev-harness hud]"]
+    for s in state.get("pipeline", []):
+        name = s.get("name", "?")
+        status = s.get("status", "PENDING")
+        parts = [f"{name} -> {status}"]
+        gate_bits = [f"{k}={'pass' if v else 'FAIL'}" for k, v in (s.get("gates") or {}).items()]
+        phases = s.get("phases") or []
+        if phases:
+            done = sum(1 for p in phases if p.get("status") == "DONE")
+            parts.append(f"({done}/{len(phases)} phases)")
+            # implement 的 gate 挂在 phase 上，只强调失败项——失败 gate 是裁判最需要的 ground truth
+            for p in phases:
+                for k, v in (p.get("gates") or {}).items():
+                    if not v:
+                        gate_bits.append(f"{p.get('name', '?')}:{k}=FAIL")
+        if gate_bits:
+            parts.append("[" + " ".join(gate_bits) + "]")
+        lines.append(" ".join(parts))
+    lines.append(f"error_count={state.get('metrics', {}).get('total_errors', 0)}")
+    cur = state.get("current_stage", "")
+    if cur:
+        lines.append(f"current_stage={cur}")
+    if state.get("paused"):
+        lines.append(f"paused: {state.get('pause_reason', '')}")
+    return "\n".join(lines)
+
 def render_hud(state):
     task = state.get("task", {})
     metrics = state.get("metrics", {})
@@ -610,6 +643,9 @@ def render_hud(state):
     print(f"| {pad_to_width(proj_line, W)} |")
     task_line = f"Task: {task.get('name', '?')}  Route: {task.get('route', '?')}  Branch: {task.get('branch', '')}"
     print(f"| {pad_to_width(task_line, W)} |")
+    if state.get("paused"):
+        paused_line = f"PAUSED: {state.get('pause_reason', '')}"
+        print(f"| {pad_to_width(paused_line, W)} |")
     print("+" + "-" * W + "+")
 
     # Pipeline 进度

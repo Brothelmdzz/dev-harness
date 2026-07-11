@@ -29,19 +29,15 @@ model_context: claude-opus-4.5+
 
 ## 连续执行（违纪红线）
 
-不在阶段间停下和用户 check-in。执行完 pipeline 全部阶段，唯一可停的三种情形：BLOCKED 且无法自解 / 真正阻断推进的歧义 / 全部阶段完成。"要我继续吗？"式提问和进度小结是在浪费用户时间——用户输入 `/dev` 就是让你跑完。
+不在阶段间停下和用户 check-in。跑完 pipeline 全部阶段，唯一可停的三种情形：BLOCKED 且无法自解 / 真正阻断推进的歧义 / 全部阶段完成。"要我继续吗？"式提问和进度小结在浪费用户时间——用户输入 `/dev` 就是让你跑完。下表左列是摆烂借口/红旗，出现即代表你在违纪：
 
-| 借口 | 现实 |
+| 摆烂借口 / 红旗 | 现实 |
 |------|------|
 | "阶段间同步下进度更稳妥" | update 状态已是唯一进度源，同步=停摆 |
 | "让用户确认下再进 implement" | 只有 `plan.fallback=wait` 才停；其余一律续跑 |
 | "这一步有点不确定，先问问" | 不确定≠阻断。记 pitfall、按最简可工作版本推进 |
-
-### 红旗（出现即代表你在摆烂）
-
-- 写了"已完成 X 阶段，是否继续" — 删掉，直接进下一阶段
-- 用自然语言复述"接下来我会…"代替真的调用 `harness.py update`
-- 违背话术字面 = 违背话术精神
+| 写"已完成 X 阶段，是否继续" | 删掉，直接进下一阶段 |
+| 用"接下来我会…"复述代替真的调用 `harness.py update` | 违背话术字面 = 违背话术精神 |
 
 ## 脚本路径
 
@@ -85,7 +81,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts
 
 ## Pipeline 推进
 
-每个阶段按下面的循环走。`update` 之后**立即**跑一次 `hud`——hud 输出作为工具结果进 transcript，是完成裁判（prompt Stop hook）判定流水线是否真跑完的唯一证据；不跑 hud 裁判看不到任何状态。
+每个阶段按下面的循环走。`update` 的 stdout 已自带 hud 快照（每 stage 一行 + gate + current_stage/error_count/paused），作为工具结果进 transcript，就是完成裁判（prompt Stop hook）判定流水线是否跑完的证据——无需再单独跑 hud。只有跨阶段想重看全局时才单独 `harness.py hud`。
 
 ```bash
 # 开始
@@ -93,9 +89,8 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts
 
 # 执行 Skill（根据解析结果）
 
-# 完成
+# 完成（update 输出已自带 hud 快照，不用再跑 hud）
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" update <stage> DONE
-bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts/harness.py" hud
 
 # 直接继续下一个阶段，不停下
 ```
@@ -104,7 +99,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/dh-python.sh" "${CLAUDE_PLUGIN_ROOT}/scripts
 
 - [ ] 产出文件已落盘：`<path>`
 - [ ] 门禁结果：build=`<pass/fail>` test=`<pass/fail>`
-- [ ] 已执行 `harness.py update <stage> DONE` + `harness.py hud`  ← 未执行本行禁止进入下一 stage
+- [ ] 已执行 `harness.py update <stage> DONE`（其 stdout 的 hud 快照即裁判证据）  ← 未执行本行禁止进入下一 stage
 
 ---
 

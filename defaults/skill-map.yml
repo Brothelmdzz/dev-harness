@@ -1,5 +1,8 @@
 # Skill 别名映射 (v3.0)
 # stage name → 按优先级尝试的 Skill 名称列表
+#
+# 本文件与 scripts/skill-resolver.py 的 SKILL_ALIASES 是双源（历史遗留，尚未合一）：
+# 改这里必须同步改那边，否则实际解析行为会与本文件声明的别名列表漂移。
 
 skill_aliases:
   research:

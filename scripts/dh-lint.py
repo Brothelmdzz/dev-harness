@@ -231,12 +231,25 @@ def _skill_slug(skill_md: Path) -> str:
     return skill_md.parent.name
 
 
+_RED_HEADING_RE = re.compile(r"(?im)^#+\s*RED\b")
+_GREEN_HEADING_RE = re.compile(r"(?im)^#+\s*GREEN\b")
+
+
+def _has_pressure_evidence(p: Path) -> bool:
+    """证据文件门槛：存在且非空不再够格，必须 >=500 字节 + 同时含 RED 与 GREEN 段落标题。"""
+    if not p.is_file() or p.stat().st_size < 500:
+        return False
+    text = p.read_text(encoding="utf-8", errors="replace")
+    return bool(_RED_HEADING_RE.search(text)) and bool(_GREEN_HEADING_RE.search(text))
+
+
 def check_skill_edit_evidence() -> list[tuple]:
     """v4.5: SKILL.md 编辑证据门禁（Iron Law 对 EDIT 同样适用，不只 NEW）。
 
     diff 命中 skills/**/SKILL.md 的 description 行、或连续执行红线/启动声明/
     完成契约段时，要求 eval/results/ 下存在本次改动对应的 RED+GREEN 压力测试
-    证据文件（命名约定 <date>-<skill>-pressure.md，只检查存在性 + 非空）。
+    证据文件（命名约定 <date>-<skill>-pressure.md，要求 ≥500 字节且同时含
+    RED/GREEN 段落标题——只检查存在性+非空太弱，会被空壳文件糊弄过去）。
 
     对比基准由 --base 指定（默认 master）。只在显式
     --check=skill-edit-evidence 时运行，不进 run-all 默认集合——
@@ -261,8 +274,7 @@ def check_skill_edit_evidence() -> list[tuple]:
             continue
         slug = _skill_slug(f)
         has_evidence = results_dir.exists() and any(
-            p.is_file() and p.stat().st_size > 0
-            for p in results_dir.glob(f"*-{slug}-pressure.md")
+            _has_pressure_evidence(p) for p in results_dir.glob(f"*-{slug}-pressure.md")
         )
         if not has_evidence:
             violations.append((

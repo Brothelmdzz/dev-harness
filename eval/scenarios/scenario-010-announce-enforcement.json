@@ -2,7 +2,7 @@
   "task_id": "scenario-010-announce-enforcement",
   "task_source": "real-task",
   "title": "/dev 启动声明强制 — skills/dev/SKILL.md 加防摆烂启动段",
-  "description": "防止 Claude 在用户 /dev 后用『按 X 流程启动』的抽象总结代替执行真正 Step 0。在 skills/dev/SKILL.md 顶部新增『启动声明（必读 · 不可跳过）』段：第一条回复必须以 `Using dev-harness:dev skill — running Step 0 now.` 开头，并在同一回复内立即并行执行 Step 0 三条 Bash（cat harness-state.json / detect-stack.sh / skill-resolver.py --all）。明令禁止抽象总结代替执行。设计同源 superpowers `executing-plans` skill 的 Announce 模式（v3.4.2 commit 已实施，本 scenario 作为回归 baseline）。",
+  "description": "防止 Claude 在用户 /dev 后用『按 X 流程启动』的抽象总结代替执行真正 Step 0。在 skills/dev/SKILL.md 顶部新增『启动声明（必读 · 不可跳过）』段：第一条回复必须以 `Using dev-harness:dev-pipeline skill — running Step 0 now.` 开头，并在同一回复内立即并行执行 Step 0 三条 Bash（cat harness-state.json / detect-stack.sh / skill-resolver.py --all）。明令禁止抽象总结代替执行。设计同源 superpowers `executing-plans` skill 的 Announce 模式（v3.4.2 commit 已实施，本 scenario 作为回归 baseline）。",
   "complexity": "small",
   "expected_route": "C-lite",
   "expected_skills": ["generic-implement"],
@@ -18,13 +18,13 @@
     ]
   },
   "verification": {
-    "command": "grep -E '启动声明|必读.*不可跳过|Using dev-harness:dev skill — running Step 0 now' skills/dev/SKILL.md",
+    "command": "grep -E '启动声明|必读.*不可跳过|Using dev-harness:dev-pipeline skill — running Step 0 now' skills/dev/SKILL.md",
     "success_criteria": "skills/dev/SKILL.md 含启动声明段 + 精确 Announce 字符串"
   },
   "rubric": {
     "must_pass": [
       "skills/dev/SKILL.md 顶部含『启动声明（必读 · 不可跳过）』段",
-      "明示第一条回复必须以 `Using dev-harness:dev skill — running Step 0 now.` 开头",
+      "明示第一条回复必须以 `Using dev-harness:dev-pipeline skill — running Step 0 now.` 开头",
       "明示必须在同一回复内并行执行 Step 0 的三条 Bash"
     ],
     "should_pass": [

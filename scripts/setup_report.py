@@ -48,8 +48,10 @@ REQUIRED_FILES = [
     ".claude-plugin/plugin.json",
 ]
 
-# ready 布尔只由这几项裁决：任一 fail 即 not ready（venv 缺失可被系统 python 兜底，不入此列）
-CRITICAL_IDS = {"python_exec", "required_files", "plugin_root", "filelock"}
+# ready 布尔只由这几项裁决：任一 fail 即 not ready。venv 缺失可被系统 python 兜底、
+# filelock 只影响并行模式（串行不需要它）——两者都不入此列，否则无 venv 用户 ready 会
+# 恒为 False，被反复劝修一个其实不影响串行使用的可选依赖。
+CRITICAL_IDS = {"python_exec", "required_files", "plugin_root"}
 
 
 # ==================== 通用子进程封装 ====================
@@ -218,21 +220,19 @@ def _check(cid, label, status, detail="", fix_hint=""):
 # ==================== 检测项：通用 ====================
 
 def check_python_exec(ctx: Ctx):
-    """python 可执行性——用执行验证，不用 which（Windows 商店存根 exit 49 坑）。"""
+    """python 可执行性——复用 build_report 已跑过的 system_python()（同一套执行验证逻辑，
+    不用 which 判断，Windows 商店存根 exit 49 坑），不再对同一批候选二次 which+run。"""
+    if ctx.system_py:
+        _, ver, _ = run_py(ctx.system_py, "import sys;print('.'.join(map(str,sys.version_info[:3])))")
+        name = Path(ctx.system_py).stem
+        return _check("python_exec", "Python 可执行", "ok",
+                      f"{name} → {ctx.system_py}（Python {ver or '?'}）")
     candidates = [n for n in ("python", "python3") if shutil.which(n)]
     if not candidates:
         return _check("python_exec", "Python 可执行", "fail",
                       "PATH 上未找到 python/python3",
                       "安装 Python 3.8+：https://www.python.org/downloads/")
-    for name in candidates:
-        exe = shutil.which(name)
-        rc, out, _ = run_py(exe, "print(1)")
-        if rc == 0 and out == "1":
-            ctx.system_py = exe
-            _, ver, _ = run_py(exe, "import sys;print('.'.join(map(str,sys.version_info[:3])))")
-            return _check("python_exec", "Python 可执行", "ok",
-                          f"{name} → {exe}（Python {ver or '?'}）")
-    # which 命中但都跑不动 → 典型 Windows 商店存根
+    # which 命中但 system_python() 验证执行失败 → 典型 Windows 商店存根
     return _check("python_exec", "Python 可执行", "fail",
                   f"找到 {candidates} 但执行失败（疑似 Windows 商店存根，exit 49）",
                   "从 python.org 安装真实 Python，或在 设置>应用>应用执行别名 关闭 python 存根")
@@ -297,7 +297,7 @@ def check_codex_cli(ctx: Ctx):
     bash = shutil.which("bash")
     if not bash:
         return _check("codex_cli", "codex cli（跨厂商审查）", "skip", "无 bash，无法运行 detect-codex.sh")
-    rc, _, _ = run(["bash", str(script)])
+    rc, _, _ = run(["bash", str(script)], timeout=5)
     if rc == 0:
         return _check("codex_cli", "codex cli（跨厂商审查）", "ok", "codex cli 就绪，可启用 Layer 2 对抗审查")
     return _check("codex_cli", "codex cli（跨厂商审查）", "skip",
@@ -358,24 +358,29 @@ def check_claude_hooks_enabled(ctx: Ctx):
 # ==================== 检测项：Codex ====================
 
 def check_codex_goals(ctx: Ctx):
-    """codex features 里 goals 状态。无 codex CLI → skip。"""
+    """codex features 里 goals 状态。无 codex CLI → skip。
+
+    `codex features list` 输出是「name stage effective」三列，只信最后一列 == "true"
+    才算启用——裸子串匹配 "enabled"/"stable"/"true" 会把 "disabled"（含 "enabled" 子串）、
+    "stable false"（含 "stable" 但实际未启用）误判为已启用，是假阳性。
+    """
     codex = shutil.which("codex")
     if not codex:
         return _check("codex_goals", "Codex goals 特性", "skip", "未找到 codex CLI（非 Codex 平台可忽略）")
-    rc, out, err = run([codex, "features", "list"])
-    blob = (out + "\n" + err).lower()
+    rc, out, err = run([codex, "features", "list"], timeout=5)
+    blob = out + "\n" + err
     if rc != 0 and not blob.strip():
         return _check("codex_goals", "Codex goals 特性", "skip", "codex features list 无输出（旧版可能无此子命令）")
-    line = next((ln for ln in blob.splitlines() if "goal" in ln), "")
-    if "goal" in blob:
-        enabled = ("true" in line) or ("stable" in line) or ("enabled" in line)
-        if enabled:
-            return _check("codex_goals", "Codex goals 特性", "ok", line.strip() or "goals 已启用")
-        return _check("codex_goals", "Codex goals 特性", "warn",
-                      line.strip() or "goals 未启用",
-                      "升级 Codex（goals v0.133.0+ 默认开）或在 config 开启")
-    return _check("codex_goals", "Codex goals 特性", "warn", "features 输出未见 goals 条目",
-                  "确认 Codex 版本支持 goals 特性")
+    line = next((ln for ln in blob.splitlines() if "goal" in ln.lower()), "")
+    if not line:
+        return _check("codex_goals", "Codex goals 特性", "warn", "features 输出未见 goals 条目",
+                      "确认 Codex 版本支持 goals 特性")
+    cols = line.split()
+    effective = cols[-1].lower() if cols else ""
+    if effective == "true":
+        return _check("codex_goals", "Codex goals 特性", "ok", line.strip())
+    return _check("codex_goals", "Codex goals 特性", "warn", line.strip() or "goals 未启用",
+                  "升级 Codex（goals v0.133.0+ 默认开）或在 config 开启")
 
 
 def check_codex_hook_trust(ctx: Ctx):
@@ -453,16 +458,18 @@ def _scan_legacy():
 
 
 def check_legacy_hook(ctx: Ctx):
-    """旧 Stop hook 遗留检测。现代做法是移除（插件 hooks.json 已自动接管），--fix 执行清理。"""
+    """旧 Stop hook 遗留检测。现代做法是移除（插件 hooks.json 已自动接管），--fix 执行清理。
+
+    do_fix() 在所有检测项之前跑完（见 build_report），本函数开头的 _scan_legacy() 天然
+    已是 --fix 后的状态，不需要再按 ctx.fix 分支重新扫描一次——两次扫描间文件系统不会变化，
+    那是结构性死代码。
+    """
     settings, data, legacy_file, issues = _scan_legacy()
     if not issues:
-        return _check("legacy_hook", "无旧 hook 遗留", "ok", "插件 hooks/hooks.json 自动接管，无用户级残留")
+        detail = "已清理旧遗留注册" if ctx.fix else "插件 hooks/hooks.json 自动接管，无用户级残留"
+        return _check("legacy_hook", "无旧 hook 遗留", "ok", detail)
     if ctx.fix:
-        # do_fix 已清理，重扫确认
-        _, _, _, issues2 = _scan_legacy()
-        if not issues2:
-            return _check("legacy_hook", "无旧 hook 遗留", "ok", "已清理旧遗留注册")
-        return _check("legacy_hook", "无旧 hook 遗留", "warn", f"清理后仍残留：{', '.join(issues2)}")
+        return _check("legacy_hook", "无旧 hook 遗留", "warn", f"清理后仍残留：{', '.join(issues)}")
     return _check("legacy_hook", "无旧 hook 遗留", "warn",
                   "、".join(issues) + "（Windows bash 路径导致 Cursor 无法识别）",
                   "运行 /dev-harness:setup --fix 清理旧注册")

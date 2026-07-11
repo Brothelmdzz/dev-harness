@@ -1,4 +1,7 @@
 #!/bin/bash
+# [DEPRECATED] 已被 scripts/setup_report.py 的 find_dh_home() 收编，
+# 保留仅为兼容旧文档引用，勿再扩展。新入口：/dev-harness:setup --fix
+#
 # 自动发现 dev-harness 安装路径
 # 优先级: marketplace 安装 > 本地开发 > plugins 目录 > 递归搜索
 

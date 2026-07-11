@@ -9,8 +9,9 @@
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# 兼容 Claude Code / Cursor IDE — 优先 CLAUDE_PLUGIN_ROOT，其次 CURSOR_PLUGIN_ROOT
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
+# 兼容 Claude Code / Cursor IDE / 手动导出的 PLUGIN_ROOT，优先级与 setup_report.py 的
+# resolve_plugin_root() 对齐：CLAUDE_PLUGIN_ROOT → CURSOR_PLUGIN_ROOT → PLUGIN_ROOT → 自定位
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}}}"
 
 # venv 候选目录：DATA 优先，ROOT 兜底
 VENV_CANDIDATES=()

@@ -45,7 +45,8 @@ bash scripts/sync-plugin-meta.sh
 /dev → skills/dev/SKILL.md (name: dev-pipeline，编排器)
   → detect-stack.sh + skill-resolver.py + harness.py init
   → Pipeline 循环: 按 pipeline.yml 定义的阶段依次执行
-    每步完成 → harness.py update 然后 harness.py hud（hud 输出以 Bash 工具结果落 transcript）
+    每步完成 → harness.py update（自带 hud 快照输出，不必再单独调用 hud；独立的
+    hud-context hook 已移除，快照下沉进 update 自身）
     Claude 想停 → Stop 事件双 hook 并行、OR-block ⇒ AND-to-stop：
       command hook（stop-hook.py，确定性地板：真实 gate/DAG/错误计数）
       prompt hook（haiku 完成裁判，只读 transcript 里的 hud 表格判断语义是否真完成）
@@ -114,7 +115,7 @@ build/test 失败 → stop-hook capture_failure() → .claude/pitfall-journal.js
 | `.codex-plugin/` | v4.5 新增：Codex 插件清单（`interface` 块），故意不声明 `hooks` 字段以启用 hooks.json 的约定发现 |
 | `scripts/` | Python/Shell 工具脚本（含 v4 `detect-codex.sh` `pitfall-analyze.py`，v4.5 新增 `setup_report.py`）|
 | `scripts/lib/` | 共享库: state / compat / pipeline / plan / project / config / utils / hook_trace / **pitfall** (v4) |
-| `hooks/` | stop-hook + plan-watcher + activity-watcher + session-init + hud-context (v4.5) + hooks.json |
+| `hooks/` | stop-hook + plan-watcher + activity-watcher + session-init + hooks.json（v4.5 起移除独立 hud-context：hud 快照改由 harness.py update 自带输出）|
 | `agents/` | 12 个 Agent 定义 |
 | `defaults/` | pipeline.yml + skill-map.yml |
 | `templates/` | 项目配置模板 + `project-skeleton/` 三层规范骨架（v4 C 阶段，20 个文件）+ **`goal-automation/`** v4.5 新增：`/goal` 咒语与 CC routine / Codex automation.toml 模板 |
@@ -136,4 +137,5 @@ build/test 失败 → stop-hook capture_failure() → .claude/pitfall-journal.js
 - **设计哲学是最高准则**：任何架构决策先对照 `docs/design-philosophy.md` 八大原则 + 九条架构红线
 - **docs/ 公开范围**：`docs/` 整体被 `.gitignore` 排除，仅 `design-philosophy.md` `external-references-2026-05.md` `quickstart.md` `contributing.md` `known-issues.md` 白名单公开
 - **`defaults/skill-map.yml` 与 `scripts/skill-resolver.py` 的 `SKILL_ALIASES` 是双源**（历史遗留，尚未合一）：改一处必须同步改另一处，否则 resolver 与文档声明的别名会漂移
+- **SKILL description 与 `commands/*.md` 是跨平台触发面，优先英文书写**——这是对全局『文档文案中文』规则的项目级有意豁免：Codex 的隐式技能匹配依赖英文前置触发词，中文描述会降低跨平台命中率
 - **`hooks/hooks.json` 的 `command` 字符串是 Codex 信任冻结契约**：Codex 按整个 hook 块计算信任哈希，`command` 一行不变则改 `stop-hook.py`/`hud-context.py` 等 `.py` 内容不会触发用户重批准；反之只要动了 `command` 行本身（哪怕只加个空格），Codex 侧就要求用户重新走一次 `/hooks` 批准
