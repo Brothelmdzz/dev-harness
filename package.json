@@ -1,6 +1,6 @@
 {
   "name": "dev-harness",
-  "version": "3.4.4",
+  "version": "4.5.0",
   "description": "Harness Engineering development pipeline for Claude Code. Three-layer skill resolution, auto-loop iteration inspired by Karpathy's autoresearch, visual HUD, and 12 specialized agents.",
   "homepage": "https://github.com/brothelmdzz/dev-harness",
   "repository": {
