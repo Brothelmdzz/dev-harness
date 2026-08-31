@@ -31,6 +31,11 @@ docs/*
 !docs/quickstart.md
 !docs/contributing.md
 !docs/known-issues.md
+!docs/superpowers/
+docs/superpowers/*
+!docs/superpowers/specs/
+docs/superpowers/specs/*
+!docs/superpowers/specs/*.md
 
 # Python
 __pycache__/
