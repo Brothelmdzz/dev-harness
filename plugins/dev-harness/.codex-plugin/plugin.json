@@ -1,0 +1,17 @@
+{
+  "name": "dev-harness",
+  "version": "5.0.0-alpha.2",
+  "description": "团队协作约定：项目初始化、接手工作、变更检查和跨人员、跨 Agent 交接。",
+  "license": "MIT",
+  "author": {"name": "brothelmdzz", "url": "https://github.com/Brothelmdzz"},
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Dev Harness · 团队版",
+    "shortDescription": "让个人和团队的多个 Agent 按共享项目约定工作",
+    "longDescription": "复用项目现有任务、Git、知识与验证工具，用四个 Skill 支持团队协作、反馈调整和独立接手。",
+    "developerName": "brothelmdzz",
+    "capabilities": ["Interactive", "Write"],
+    "category": "Coding",
+    "defaultPrompt": ["初始化这个项目的团队协作约定", "接手这个任务并按项目约定推进", "整理可供另一位开发者接手的交接材料"]
+  }
+}

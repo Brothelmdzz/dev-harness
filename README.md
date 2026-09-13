@@ -1,5 +1,16 @@
 # Dev Harness
 
+**团队版预发布：5.0.0-alpha.2。** 目标是让进入项目的 Agent 找到共享约定、使用现有工具、按项目范围工作并留下可接续的结果。团队版源码位于 [plugins/dev-harness](plugins/dev-harness/README.md)，提供初始化、接手、变更检查、交接四个 Skill。
+
+Codex 安装团队版：
+
+```sh
+codex plugin marketplace add Brothelmdzz/dev-harness --ref v5.0.0-alpha.2
+codex plugin add dev-harness@dev-harness-team
+```
+
+安装后使用新任务，明确请求“初始化本项目的 Dev Harness 协作约定”。若已安装旧版，保留旧包并禁用其启用状态，避免两套入口同时工作。版本边界与验证说明见 [团队版发布说明](plugins/dev-harness/RELEASE.md)。本仓库主干和以下内容仍描述历史流水线版；团队版 marketplace 只指向 `plugins/dev-harness`。
+
 > Self-driving development pipeline for Claude Code & Cursor.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)

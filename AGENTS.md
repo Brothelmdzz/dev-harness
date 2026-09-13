@@ -1,5 +1,7 @@
 # Dev Harness Agents
 
+团队版源码位于 `plugins/dev-harness/`，范围是项目工作约定的发现、遵循、更新及交接。四个Skill不要求运行下列历史角色流水线。维护团队版时运行 `python -m unittest discover -s tests/team_harness -v` 和 `python scripts/team_plugin.py check plugins/dev-harness`。公开发布只纳入产品、公共文档和确定性检查；真实项目回执保留在私有验收环境。
+
 12 个专用 Agent，**模型异构**（v3.4.1 起，详见 `docs/design-philosophy.md` 原则 7）。
 
 | Agent | 角色 | 模型 | Tools |

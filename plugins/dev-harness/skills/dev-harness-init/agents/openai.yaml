@@ -1,0 +1,5 @@
+interface:
+  display_name: "Dev Harness 项目初始化"
+  short_description: "按明确请求初始化或核对项目的团队协作入口"
+policy:
+  allow_implicit_invocation: false
