@@ -1,4 +1,8 @@
-# 5.0.0-alpha.2 团队版预发布
+# 5.0.0-alpha.3 团队版预发布
+
+本版修正初始化的两个缺口：沿现有文档明确引用确认实际操作规范；分别核对本地存在与团队获取方式，包含被忽略、未跟踪及尚未发布的资料。不自动修改忽略规则或将本地材料上传。
+
+本版定向回归使用两个新上下文（Sol/medium、Luna/max），都发现了指导文档指向的被忽略SOP，并标清草案与本地入口的共享缺项。原文、忽略规则和Git暂存区保持不变，生成引用有效；每个模型仅一次小样，不提供统计遵循率。
 
 ## 产品范围
 
@@ -15,7 +19,7 @@
 ## 安装与回退
 
 ```sh
-codex plugin marketplace add Brothelmdzz/dev-harness --ref v5.0.0-alpha.2
+codex plugin marketplace add Brothelmdzz/dev-harness --ref v5.0.0-alpha.3
 codex plugin add dev-harness@dev-harness-team
 codex plugin list --marketplace dev-harness-team --json
 ```
