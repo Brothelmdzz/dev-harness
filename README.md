@@ -1,11 +1,11 @@
 # Dev Harness
 
-**团队版预发布：5.0.0-alpha.3。** 目标是让进入项目的 Agent 找到共享约定、使用现有工具、按项目范围工作并留下可接续的结果。团队版源码位于 [plugins/dev-harness](plugins/dev-harness/README.md)，提供初始化、接手、变更检查、交接四个 Skill。
+**团队版预发布：5.0.0-alpha.4。** 让不同开发者及其多个 Agent 依据当前项目约定接续工作，减少对原作者私人会话的依赖。团队版源码位于 [plugins/dev-harness](plugins/dev-harness/README.md)，提供初始化、接手、变更检查、交接四个 Skill。
 
 Codex 安装团队版：
 
 ```sh
-codex plugin marketplace add Brothelmdzz/dev-harness --ref v5.0.0-alpha.3
+codex plugin marketplace add Brothelmdzz/dev-harness --ref v5.0.0-alpha.4
 codex plugin add dev-harness@dev-harness-team
 ```
 

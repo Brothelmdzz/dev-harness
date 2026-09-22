@@ -1,6 +1,6 @@
 {
   "name": "dev-harness",
-  "version": "5.0.0-alpha.3",
+  "version": "5.0.0-alpha.4",
   "description": "团队协作约定：项目初始化、接手工作、变更检查和跨人员、跨 Agent 交接。",
   "license": "MIT",
   "author": {"name": "brothelmdzz", "url": "https://github.com/Brothelmdzz"},
