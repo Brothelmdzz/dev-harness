@@ -229,7 +229,8 @@
           "type": "integer",
           "enum": [
             1
-          ]
+          ],
+          "$comment": "CLI additionally requires the JSON integer token 1 and rejects 1.0 or 1e0. JSON Schema treats these numeric values as equivalent; this lexical constraint is checked by the CLI, not by this shape schema."
         },
         "kind": {
           "type": "string",
@@ -309,7 +310,8 @@
           "type": "integer",
           "enum": [
             1
-          ]
+          ],
+          "$comment": "CLI additionally requires the JSON integer token 1 and rejects 1.0 or 1e0. JSON Schema treats these numeric values as equivalent; this lexical constraint is checked by the CLI, not by this shape schema."
         },
         "kind": {
           "type": "string",

@@ -66,6 +66,23 @@ class ReceiptTests(unittest.TestCase):
                 self.context = context(self.receipt, peer)
                 self.assertEqual("path_conflict" in self.codes(self.receipt, peer), expected)
 
+    def test_file_ancestor_conflicts_in_both_orders(self):
+        for child in ("src/api/client.py", "src/api/client/"):
+            for left_path, right_path in (("src/api", child), (child, "src/api")):
+                with self.subTest(left=left_path, right=right_path):
+                    left = receipt("task-a", "session-a", [left_path])
+                    right = receipt("task-b", "session-b", [right_path])
+                    self.context = context(left, right)
+                    self.assertEqual(self.codes(left, right), {"path_conflict"})
+
+    def test_file_ancestor_boundary_does_not_match_sibling_prefix(self):
+        for left_path, right_path in (("src/api", "src/api-v2/"), ("src/api-v2/", "src/api")):
+            with self.subTest(left=left_path, right=right_path):
+                left = receipt("task-a", "session-a", [left_path])
+                right = receipt("task-b", "session-b", [right_path])
+                self.context = context(left, right)
+                self.assertEqual(self.codes(left, right), set())
+
     def test_shared_interface_conflict_despite_disjoint_files(self):
         self.receipt["ownership"]["shared_interfaces"] = ["public-api-v1"]
         peer = receipt("task-b", "session-b", ["src/ui/"])
@@ -235,6 +252,20 @@ class ReceiptTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 2)
                 self.assertEqual(json.loads(result.stdout)["status"], "invalid_input")
                 self.assertNotIn("Traceback", result.stderr)
+
+    def test_schema_version_requires_integer_token_in_both_inputs(self):
+        # JSON Schema considers 1.0 an integer; the frozen CLI requires token 1.
+        for filename in ("receipt.json", "context.json"):
+            for token in ("1.0", "1e0", "true", '"1"'):
+                with self.subTest(file=filename, token=token), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    self.write_inputs(root)
+                    path = root / filename
+                    path.write_text(path.read_text().replace('"schema_version": 1',
+                                                             '"schema_version": ' + token, 1))
+                    result = self.run_cli(root)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertEqual(json.loads(result.stdout)["status"], "invalid_input")
 
     def test_cli_peer_argument_checks_conflicts(self):
         peer = receipt("task-b", "session-b")

@@ -85,9 +85,9 @@ def validate_record(record, path):
 
 
 def overlaps(left, right):
-    return (left.rstrip("/") == right.rstrip("/")
-            or (left.endswith("/") and right.startswith(left))
-            or (right.endswith("/") and left.startswith(right)))
+    # A file also conflicts with descendants: Git cannot store both at once.
+    left, right = left.rstrip("/"), right.rstrip("/")
+    return left == right or left.startswith(right + "/") or right.startswith(left + "/")
 
 
 def check(receipts, context, schema):
