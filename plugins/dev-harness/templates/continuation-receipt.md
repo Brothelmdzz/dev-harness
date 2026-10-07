@@ -2,7 +2,7 @@
 
 已有任务/MR 足够接续就直接引用。普通同机接续核对原工作区；仅在跨环境需要结构化绑定时使用本模板，不逐轮填表。回执连接现有事实，不替代任务来源、候选制品或原始证据，也不提供锁和调度。
 
-以下按冻结 v1 合同（实现候选 `668aeddd1bdb34d4d164a0073d32c5315dd2da97`）说明。所有仓库、任务、Session、来源、SHA 与证据均为合成值，只供输入合同演示，不能用于真实项目交接。真实项目回执留在私有验收环境。
+以下按冻结 v1 合同（实现候选 `c9a7f6e2483d19e745a2c7ad75830d3988fd588b`）说明。所有仓库、任务、Session、来源、SHA 与证据均为合成值，只供输入合同演示，不能用于真实项目交接。真实项目回执留在私有验收环境。
 
 ## 来源与未知
 
@@ -106,8 +106,8 @@ python scripts/team_receipt.py check receipt.json --context context.json
 
 解析后的结果为 stdout JSON；普通命令行语法错误走 stderr、exit 2。工具只读、不联网、不运行证据命令；`passed` 也只是输入声明。`result` 完整枚举为 `passed|failed|pending|not_run|skipped|unavailable|unknown`，等待异步最终结果时用 `pending`。
 
-对象禁止未知字段、`null`、重复 key 和非有限数字；`schema_version` 为整数 `1`。SHA 是 40 或 64 位完整小写十六进制值。身份和版本按原值区分大小写；source 只要求非空白文本，不认证或读取。`handoff` 仅在 state 为 `handoff` 时必填，其他状态禁止；`to_session` 必须不同于发出方。context task 没有 evidence 或 handoff 字段。
+对象禁止未知字段、`null`、重复 key 和非有限数字。CLI 要求 `schema_version` 写为 JSON 字面整数 `1`，拒绝 `1.0`、`1e0`、布尔值和字符串；标准 JSON Schema 接受数值等价的 `1.0`/`1e0`，独立 schema 检查不能代替 CLI 的额外字面量检查。SHA 是 40 或 64 位完整小写十六进制值。身份和版本按原值区分大小写；source 只要求非空白文本，不认证或读取。`handoff` 仅在 state 为 `handoff` 时必填，其他状态禁止；`to_session` 必须不同于发出方。context task 没有 evidence 或 handoff 字段。
 
-ownership 路径使用仓库相对字面路径：`src/api/` 表示目录范围，`src/api/client.py` 表示文件；不使用绝对路径、`.`/`..`、空路径段、反斜杠、冒号、glob 或控制字符。工具按字面路径区分大小写，不解析符号链接或别名。共享接口用项目已有标识；不同路径仍可能通过接口产生依赖。
+ownership 路径使用仓库相对字面路径：`src/api/` 表示目录范围，`src/api/client.py` 表示文件；不使用绝对路径、`.`/`..`、空路径段、反斜杠、冒号、glob 或控制字符。路径祖先关系也算冲突，包括无尾斜杠的 `src/api` 与 `src/api/client.py`；`src/api-v2/` 属于不同范围。工具按字面路径区分大小写，不解析符号链接或别名。共享接口用项目已有标识；不同路径仍可能通过接口产生依赖。
 
 校验器比较所给任务版本、state、归属、候选、写入范围、依赖声明、决定版本及证据候选绑定；对所给 active/handoff 回执检查重复任务、路径重叠与共享接口交集。它不验证 Git 对象存在、依赖已经集成、状态迁移合法、来源真实/最新或未提供的工作。取消/恢复从既有来源刷新事实；变更后只重查受影响证据，实际分配、冲突协调和接续由项目既有机制负责。
