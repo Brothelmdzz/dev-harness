@@ -280,6 +280,95 @@ class ReceiptTests(unittest.TestCase):
             self.assertEqual(output["checked_receipts"], 2)
             self.assertEqual({error["code"] for error in output["errors"]}, {"path_conflict"})
 
+    def test_late_qa_results_are_excluded_after_owner_or_revision_changes(self):
+        for changed_head, changed_owner in ((True, True), (False, True), (False, False)):
+            for late_first in (False, True):
+                with self.subTest(head=changed_head, owner=changed_owner, late_first=late_first):
+                    late = receipt()
+                    current = copy.deepcopy(late)
+                    current["revision"] = "task-revision-2"
+                    if changed_owner:
+                        current["session_id"] = "replacement-session"
+                    if changed_head:
+                        current["candidate"]["head_sha"] = "d" * 40
+                    current["evidence"][0].update(candidate_sha=current["candidate"]["head_sha"], result="pending")
+                    self.context = context(current)
+                    self.receipt, peer = (late, current) if late_first else (current, late)
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = Path(directory)
+                        self.write_inputs(root)
+                        (root / "peer.json").write_text(json.dumps(peer))
+                        run = self.run_cli(root, "--peer", str(root / "peer.json"))
+                    output = json.loads(run.stdout)
+                    self.assertEqual(run.returncode, 1)
+                    self.assertEqual(output["evidence_results"]["passed"], 1)
+                    current_counts = output.get("current_evidence_results", output["evidence_results"])
+                    self.assertEqual(current_counts["passed"], 0)
+                    self.assertEqual(current_counts["pending"], 1)
+                    self.assertEqual(output["excluded_evidence_results"]["passed"], 1)
+                    self.assertEqual(output["excluded_receipt_indices"], [0 if late_first else 1])
+                    self.assertEqual(output["behavior_verification"], "not_performed")
+                    for name, total in output["evidence_results"].items():
+                        self.assertEqual(total, output["current_evidence_results"][name]
+                                         + output["excluded_evidence_results"][name])
+
+    def test_cancelled_evidence_is_declared_but_excluded_from_current_counts(self):
+        self.receipt["state"] = "cancelled"
+        self.context = context(self.receipt)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_inputs(root)
+            run = self.run_cli(root)
+        output = json.loads(run.stdout)
+        self.assertEqual(run.returncode, 0)
+        self.assertEqual(output["evidence_results"]["passed"], 1)
+        self.assertEqual(output.get("current_evidence_results", output["evidence_results"])["passed"], 0)
+        self.assertEqual(output["excluded_receipt_indices"], [0])
+
+    def test_scope_conflicts_exclude_both_current_receipts_from_evidence_counts(self):
+        peer = receipt("task-b", "session-b")
+        self.context = context(self.receipt, peer)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_inputs(root)
+            (root / "peer.json").write_text(json.dumps(peer))
+            run = self.run_cli(root, "--peer", str(root / "peer.json"))
+        output = json.loads(run.stdout)
+        self.assertEqual(run.returncode, 1)
+        self.assertEqual(output.get("current_evidence_results", output["evidence_results"])["passed"], 0)
+        self.assertEqual(output["excluded_evidence_results"]["passed"], 2)
+        self.assertEqual(output["excluded_receipt_indices"], [0, 1])
+
+    def test_current_complete_evidence_remains_a_declaration(self):
+        self.receipt["state"] = "complete"
+        self.context = context(self.receipt)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.write_inputs(root)
+            run = self.run_cli(root)
+        output = json.loads(run.stdout)
+        self.assertEqual(run.returncode, 0)
+        self.assertEqual(output.get("current_evidence_results", output["evidence_results"])["passed"], 1)
+        self.assertEqual(output.get("excluded_receipt_indices", []), [])
+        self.assertEqual(output["behavior_verification"], "not_performed")
+
+    def test_changed_dependency_or_evidence_sha_excludes_current_passes(self):
+        for field in ("dependencies", "evidence"):
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.receipt = receipt()
+                self.context = context(self.receipt)
+                if field == "dependencies":
+                    self.context["tasks"][0][field][0]["head_sha"] = "d" * 40
+                else:
+                    self.receipt[field][0]["candidate_sha"] = "d" * 40
+                self.write_inputs(root)
+                run = self.run_cli(root)
+                output = json.loads(run.stdout)
+                self.assertEqual(run.returncode, 1)
+                self.assertEqual(output.get("current_evidence_results", output["evidence_results"])["passed"], 0)
+                self.assertEqual(output["excluded_receipt_indices"], [0])
+
 
 if __name__ == "__main__":
     unittest.main()

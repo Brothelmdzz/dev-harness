@@ -10,11 +10,13 @@ from pathlib import Path
 
 SCHEMA = Path(__file__).with_suffix(".schema.json")
 LIVE = {"active", "handoff"}
+RESULTS = ("passed", "failed", "pending", "not_run", "skipped", "unavailable", "unknown")
 LIMITS = [
     "Consistency of supplied snapshots only; freshness and source authenticity are not verified.",
     "Only supplied peers are checked; this is not an atomic claim or a lock.",
     "Evidence commands and sources are not executed or fetched; consistency is not acceptance.",
     "Paths are lexical and case-sensitive; aliases and undeclared dependencies are not checked.",
+    "Evidence counts are declarations; current counts exclude cancelled or inconsistent snapshots, not unverified results.",
 ]
 
 
@@ -162,6 +164,29 @@ def check(receipts, context, schema):
     return errors
 
 
+def evidence_summary(receipts, errors):
+    affected = [set(map(int, re.findall(r"receipts\[(\d+)\]", item["path"]))) for item in errors]
+    excluded = {index for index, item in enumerate(receipts) if item["state"] == "cancelled"}
+    for indices in affected:
+        if len(indices) == 1:
+            excluded.update(indices)
+    individually_excluded = set(excluded)
+    for indices in affected:
+        # A stale peer must not disqualify the current owner; two current peers
+        # with a scope conflict both remain ineligible, regardless of order.
+        if len(indices) > 1 and not indices & individually_excluded:
+            excluded.update(indices)
+
+    def counts(indices):
+        evidence = [entry for index in indices for entry in receipts[index]["evidence"]]
+        return {name: sum(entry["result"] == name for entry in evidence) for name in RESULTS}
+
+    return {"evidence_results": counts(range(len(receipts))),
+            "current_evidence_results": counts(index for index in range(len(receipts)) if index not in excluded),
+            "excluded_evidence_results": counts(sorted(excluded)),
+            "excluded_receipt_indices": sorted(excluded)}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -177,9 +202,7 @@ def main(argv=None):
                   "errors": errors, "checked_receipts": len(receipts), "limits": LIMITS,
                   "behavior_verification": "not_performed",
                   "receipts_without_evidence": sum(not item["evidence"] for item in receipts),
-                  "evidence_results": {name: sum(evidence["result"] == name
-                                               for item in receipts for evidence in item["evidence"])
-                                       for name in ("passed", "failed", "pending", "not_run", "skipped", "unavailable", "unknown")}}
+                  **evidence_summary(receipts, errors)}
         code = 1 if errors else 0
     except (OSError, ValueError, RecursionError) as exc:
         result = {"status": "invalid_input", "errors": [{"code": "invalid_input", "message": str(exc)}],
