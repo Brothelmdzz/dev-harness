@@ -7,6 +7,8 @@ on:
     paths:
       - 'plugins/dev-harness/**'
       - 'scripts/team_plugin.py'
+      - 'scripts/team_receipt.py'
+      - 'scripts/team_receipt.schema.json'
       - 'tests/team_harness/**'
       - '.agents/plugins/marketplace.json'
       - '.github/workflows/team-plugin.yml'

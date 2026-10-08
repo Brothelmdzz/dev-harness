@@ -1,0 +1,347 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Dev Harness optional collaboration snapshots v1",
+  "$comment": "Shape contract only. team_receipt.py also checks identity, canonical paths and cross-snapshot consistency. Inputs are observations of existing sources, not a task database.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/receipt"
+    },
+    {
+      "$ref": "#/$defs/context"
+    }
+  ],
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "sha": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?![\\s\\S])"
+    },
+    "state": {
+      "type": "string",
+      "enum": [
+        "active",
+        "handoff",
+        "cancelled",
+        "complete"
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "properties": {
+        "base_sha": {
+          "$ref": "#/$defs/sha"
+        },
+        "head_sha": {
+          "$ref": "#/$defs/sha"
+        },
+        "source": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "required": [
+        "base_sha",
+        "head_sha",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "ownership": {
+      "type": "object",
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/text"
+        },
+        "paths": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          },
+          "uniqueItems": true,
+          "minItems": 0
+        },
+        "shared_interfaces": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/text"
+          },
+          "uniqueItems": true,
+          "minItems": 0
+        }
+      },
+      "required": [
+        "source",
+        "paths",
+        "shared_interfaces"
+      ],
+      "additionalProperties": false
+    },
+    "dependency": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "$ref": "#/$defs/text"
+        },
+        "head_sha": {
+          "$ref": "#/$defs/sha"
+        },
+        "source": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "required": [
+        "task_id",
+        "head_sha",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "decision": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/text"
+        },
+        "revision": {
+          "$ref": "#/$defs/text"
+        },
+        "source": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "required": [
+        "id",
+        "revision",
+        "source"
+      ],
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "properties": {
+        "candidate_sha": {
+          "$ref": "#/$defs/sha"
+        },
+        "command": {
+          "$ref": "#/$defs/text"
+        },
+        "result": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "pending",
+            "not_run",
+            "skipped",
+            "unavailable",
+            "unknown"
+          ]
+        },
+        "source": {
+          "$ref": "#/$defs/text"
+        },
+        "environment": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "required": [
+        "candidate_sha",
+        "command",
+        "result",
+        "source",
+        "environment"
+      ],
+      "additionalProperties": false
+    },
+    "handoff": {
+      "type": "object",
+      "properties": {
+        "to_session": {
+          "$ref": "#/$defs/text"
+        },
+        "next_action": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "required": [
+        "to_session",
+        "next_action"
+      ],
+      "additionalProperties": false
+    },
+    "task": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "$ref": "#/$defs/text"
+        },
+        "revision": {
+          "$ref": "#/$defs/text"
+        },
+        "state": {
+          "$ref": "#/$defs/state"
+        },
+        "candidate": {
+          "$ref": "#/$defs/candidate"
+        },
+        "ownership": {
+          "$ref": "#/$defs/ownership"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dependency"
+          },
+          "uniqueItems": true,
+          "minItems": 0
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/decision"
+          },
+          "uniqueItems": true,
+          "minItems": 0
+        },
+        "owner_session": {
+          "$ref": "#/$defs/text"
+        }
+      },
+      "required": [
+        "task_id",
+        "revision",
+        "state",
+        "candidate",
+        "ownership",
+        "dependencies",
+        "decisions",
+        "owner_session"
+      ],
+      "additionalProperties": false
+    },
+    "receipt": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "enum": [
+            1
+          ],
+          "$comment": "CLI additionally requires the JSON integer token 1 and rejects 1.0 or 1e0. JSON Schema treats these numeric values as equivalent; this lexical constraint is checked by the CLI, not by this shape schema."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "receipt"
+          ]
+        },
+        "repository": {
+          "$ref": "#/$defs/text"
+        },
+        "task_id": {
+          "$ref": "#/$defs/text"
+        },
+        "revision": {
+          "$ref": "#/$defs/text"
+        },
+        "state": {
+          "$ref": "#/$defs/state"
+        },
+        "candidate": {
+          "$ref": "#/$defs/candidate"
+        },
+        "ownership": {
+          "$ref": "#/$defs/ownership"
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dependency"
+          },
+          "uniqueItems": true,
+          "minItems": 0
+        },
+        "decisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/decision"
+          },
+          "uniqueItems": true,
+          "minItems": 0
+        },
+        "session_id": {
+          "$ref": "#/$defs/text"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          },
+          "uniqueItems": true,
+          "minItems": 0
+        },
+        "handoff": {
+          "$ref": "#/$defs/handoff"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "repository",
+        "task_id",
+        "revision",
+        "state",
+        "candidate",
+        "ownership",
+        "dependencies",
+        "decisions",
+        "session_id",
+        "evidence"
+      ],
+      "additionalProperties": false
+    },
+    "context": {
+      "type": "object",
+      "properties": {
+        "schema_version": {
+          "type": "integer",
+          "enum": [
+            1
+          ],
+          "$comment": "CLI additionally requires the JSON integer token 1 and rejects 1.0 or 1e0. JSON Schema treats these numeric values as equivalent; this lexical constraint is checked by the CLI, not by this shape schema."
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "context"
+          ]
+        },
+        "repository": {
+          "$ref": "#/$defs/text"
+        },
+        "source": {
+          "$ref": "#/$defs/text"
+        },
+        "tasks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/task"
+          },
+          "uniqueItems": true,
+          "minItems": 1
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "repository",
+        "source",
+        "tasks"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
